@@ -1,0 +1,100 @@
+{
+  "accounts": [
+    {
+      "id": "u_001",
+      "username": "lars",
+      "email": "lars@example.com",
+      "password": "Props!2026",
+      "displayName": "Lars Becker",
+      "bio": "Building Props, one feature at a time.",
+      "city": "Berlin",
+      "avatar": "https://placehold.co/120x120/png",
+      "friends": ["u_002", "u_003", "u_004"],
+      "createdAt": "2026-01-08T10:00:00Z"
+    },
+    {
+      "id": "u_002",
+      "username": "nina",
+      "email": "nina@example.com",
+      "password": "Nina#2026",
+      "displayName": "Nina Koch",
+      "bio": "Team player and coffee enthusiast.",
+      "city": "Hamburg",
+      "avatar": "https://placehold.co/120x120/png",
+      "friends": ["u_001", "u_003", "u_005"],
+      "createdAt": "2026-01-09T08:30:00Z"
+    },
+    {
+      "id": "u_003",
+      "username": "can",
+      "email": "can@example.com",
+      "password": "Can#2026",
+      "displayName": "Can Demir",
+      "bio": "Always shipping, always learning.",
+      "city": "Cologne",
+      "avatar": "https://placehold.co/120x120/png",
+      "friends": ["u_001", "u_002", "u_006"],
+      "createdAt": "2026-01-10T12:15:00Z"
+    },
+    {
+      "id": "u_004",
+      "username": "mia",
+      "email": "mia@example.com",
+      "password": "Mia#2026",
+      "displayName": "Mia Roth",
+      "bio": "Designing clean social experiences.",
+      "city": "Munich",
+      "avatar": "https://placehold.co/120x120/png",
+      "friends": ["u_001", "u_005", "u_007"],
+      "createdAt": "2026-01-11T09:45:00Z"
+    },
+    {
+      "id": "u_005",
+      "username": "jonas",
+      "email": "jonas@example.com",
+      "password": "Jonas#2026",
+      "displayName": "Jonas Wolf",
+      "bio": "Community first.",
+      "city": "Stuttgart",
+      "avatar": "https://placehold.co/120x120/png",
+      "friends": ["u_002", "u_004", "u_008"],
+      "createdAt": "2026-01-12T14:10:00Z"
+    },
+    {
+      "id": "u_006",
+      "username": "lea",
+      "email": "lea@example.com",
+      "password": "Lea#2026",
+      "displayName": "Lea Brandt",
+      "bio": "Turning feedback into momentum.",
+      "city": "Frankfurt",
+      "avatar": "https://placehold.co/120x120/png",
+      "friends": ["u_003", "u_007", "u_008"],
+      "createdAt": "2026-01-13T16:20:00Z"
+    },
+    {
+      "id": "u_007",
+      "username": "tarek",
+      "email": "tarek@example.com",
+      "password": "Tarek#2026",
+      "displayName": "Tarek Ali",
+      "bio": "Product-minded and data-curious.",
+      "city": "Leipzig",
+      "avatar": "https://placehold.co/120x120/png",
+      "friends": ["u_004", "u_006", "u_008"],
+      "createdAt": "2026-01-14T11:05:00Z"
+    },
+    {
+      "id": "u_008",
+      "username": "sara",
+      "email": "sara@example.com",
+      "password": "Sara#2026",
+      "displayName": "Sara Klein",
+      "bio": "Positive energy, every sprint.",
+      "city": "Dresden",
+      "avatar": "https://placehold.co/120x120/png",
+      "friends": ["u_005", "u_006", "u_007"],
+      "createdAt": "2026-01-15T07:50:00Z"
+    }
+  ]
+}
