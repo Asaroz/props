@@ -120,7 +120,44 @@ Current foundation status:
 - Auth service supports provider switch:
 	- `mock` mode: username/email + password from local JSON
 	- `supabase` mode: email + password via Supabase auth
-- Friendship/props services are present as stubs for upcoming implementation.
+- Friendship service is implemented against Supabase tables (`friend_requests`, `friendships`).
+- Props service is still a stub for upcoming implementation.
+
+### Backend Smoke Test Suite (Auth/Profile/Friendship)
+
+Run the smoke suite:
+
+```bash
+npm run smoke:test
+```
+
+The suite is intentionally split into multiple small checks and reuses the same two created users across all checks to keep free-tier load low.
+
+What it validates:
+- sign up user A
+- sign up user B
+- login success (A and B)
+- login failure with wrong password
+- profile read (own profile)
+- profile update (city, bio)
+- friend request reject flow (B -> A)
+- friend request pending + duplicate prevention (A -> B)
+- friend request accept flow
+- friendship list visibility for both users
+- logout for both users
+
+Cleanup behavior:
+- all auth users created during the run are deleted in a `finally` block
+- related `profiles`, `friend_requests`, and `friendships` rows are removed via DB cascades
+
+Rate-limit and free-tier behavior:
+- if auth sign-up rate limits are hit, the suite falls back to admin provisioning for deterministic runs
+- expected request volume per run is low
+
+Required `.env` values:
+- EXPO_PUBLIC_SUPABASE_URL
+- EXPO_PUBLIC_SUPABASE_ANON_KEY
+- SUPABASE_SERVICE_ROLE_KEY
 
 ### Apply the Initial Supabase Schema
 
@@ -128,11 +165,23 @@ Remote schema creation cannot be done with the public anon key alone. Use the Su
 
 1. Open your Supabase project.
 2. Go to SQL Editor.
-3. Copy the contents of `supabase/migrations/20260313_000001_init_props_schema.sql`.
+3. Copy the contents of `supabase/migrations/20260313000001_init_props_schema.sql`.
 4. Run the SQL once.
 
 After that, the first real profile read/write service is available in:
 - `src/backend/services/profileService.js`
+
+### Ensure Profiles Are Created Automatically
+
+Migration `supabase/migrations/20260313220000_profiles_on_auth_signup.sql` adds:
+- a DB trigger on `auth.users` to create/update `public.profiles` automatically
+- a backfill for existing auth users that still miss a profile row
+
+Apply migrations with Supabase CLI:
+
+```bash
+npx supabase db push
+```
 
 ### Create the First Real User
 
@@ -148,15 +197,22 @@ Use the frontend form to enter:
 On successful sign-up:
 - a Supabase auth user is created
 - a first `profiles` row is created automatically when a session is returned
+- if email confirmation is required, the profile row is created on first successful login after confirmation
 
 Auth UX improvements currently included:
 - sign-up password confirmation
 - password show/hide toggle
 - smoother animated switch between sign-up and login
+- session persist + restore on app launch
+- logout routed through central auth service (mock + supabase)
 
 If confirmation emails still open `localhost`, set both of these:
 - `EXPO_PUBLIC_AUTH_REDIRECT_URL` in your local `.env`
 - Supabase Dashboard -> Authentication -> URL Configuration -> Site URL / Redirect URLs
+
+Login behavior by provider:
+- `supabase`: login requires email + password (real backend auth)
+- `mock`: login supports demo username/email + password from `src/backend/mock/accounts.json`
 
 ## Expo Account Commands
 

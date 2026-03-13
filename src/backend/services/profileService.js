@@ -40,18 +40,54 @@ function mapSupabaseProfile(row) {
   };
 }
 
+function buildDefaultSupabaseProfilePayload(userId, currentUser, authUser) {
+  const email = currentUser?.email || authUser?.email || '';
+  const emailPrefix = email.includes('@') ? email.split('@')[0] : 'user';
+  const rawUsername =
+    currentUser?.username ||
+    authUser?.user_metadata?.username ||
+    emailPrefix;
+  const safeBase = String(rawUsername).toLowerCase().replace(/[^a-z0-9_]/g, '') || 'user';
+  const suffix = String(userId || '').replace(/-/g, '').slice(0, 6) || '000000';
+  const username = `${safeBase}_${suffix}`;
+  const displayName =
+    currentUser?.displayName ||
+    authUser?.user_metadata?.displayName ||
+    authUser?.user_metadata?.full_name ||
+    username;
+
+  return {
+    id: userId,
+    email,
+    username,
+    display_name: displayName,
+    bio: '',
+    avatar_url: '',
+    city: authUser?.user_metadata?.city || '',
+  };
+}
+
+async function getSupabaseAuthUser(client) {
+  const { data, error } = await client.auth.getUser();
+  if (error || !data?.user) {
+    return null;
+  }
+
+  return data.user;
+}
+
 async function resolveSupabaseUserId(currentUser) {
   if (currentUser?.id) {
     return currentUser.id;
   }
 
   const client = getSupabaseClient();
-  const { data, error } = await client.auth.getUser();
-  if (error || !data?.user) {
+  const authUser = await getSupabaseAuthUser(client);
+  if (!authUser) {
     return null;
   }
 
-  return data.user.id;
+  return authUser.id;
 }
 
 export async function getCurrentProfile(currentUser) {
@@ -72,6 +108,22 @@ export async function getCurrentProfile(currentUser) {
 
     if (error) {
       throw error;
+    }
+
+    if (!data) {
+      const authUser = await getSupabaseAuthUser(client);
+      const payload = buildDefaultSupabaseProfilePayload(userId, currentUser, authUser);
+      const { data: created, error: createError } = await client
+        .from('profiles')
+        .upsert(payload, { onConflict: 'id' })
+        .select('id, email, username, display_name, bio, avatar_url, city, created_at, updated_at')
+        .single();
+
+      if (createError) {
+        throw createError;
+      }
+
+      return mapSupabaseProfile(created);
     }
 
     return mapSupabaseProfile(data);
