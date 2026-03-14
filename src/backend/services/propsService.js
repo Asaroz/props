@@ -2,6 +2,7 @@ import { getSupabaseClient } from '../client/supabaseClient';
 import { canUseSupabase, getBackendConfig } from '../config/env';
 import { feedItems } from '../../data/mockFeed';
 import { logError, logInfo } from '../observability/logger';
+import { getVouchesForProps } from './vouchService';
 
 const TAG_SEPARATOR = '||';
 
@@ -65,7 +66,7 @@ function deserializeTags(categoryValue) {
     .filter(Boolean);
 }
 
-function mapPropsEntry(row) {
+function mapPropsEntry(row, vouchData) {
   if (!row) {
     return null;
   }
@@ -77,6 +78,8 @@ function mapPropsEntry(row) {
     content: row.content || '',
     tags: deserializeTags(row.category),
     createdAt: row.created_at,
+    vouchCount: vouchData?.count ?? 0,
+    hasVouched: vouchData?.hasVouched ?? false,
     source: 'supabase',
   };
 }
@@ -140,6 +143,22 @@ async function listFriendIds(client, userId) {
   }
 
   return [...friendIds];
+}
+
+function dedupePropsRows(rows) {
+  const seen = new Set();
+  const deduped = [];
+
+  for (const row of rows || []) {
+    if (!row?.id || seen.has(row.id)) {
+      continue;
+    }
+
+    seen.add(row.id);
+    deduped.push(row);
+  }
+
+  return deduped;
 }
 
 export async function createPropsEntry(currentUser, input) {
@@ -291,10 +310,28 @@ export async function listPropsFeed(currentUser) {
     throw receivedError;
   }
 
-  const combined = [...(sentRows || []), ...(receivedRows || [])];
+  const { data: mutualFriendRows, error: mutualFriendError } = await client
+    .from('props_entries')
+    .select('id, from_user_id, to_user_id, content, category, created_at')
+    .in('from_user_id', friendIds)
+    .in('to_user_id', friendIds)
+    .order('created_at', { ascending: false });
+
+  if (mutualFriendError) {
+    throw mutualFriendError;
+  }
+
+  const combined = dedupePropsRows([
+    ...(sentRows || []),
+    ...(receivedRows || []),
+    ...(mutualFriendRows || []),
+  ]);
   combined.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
-  const feed = combined.map(mapPropsEntry);
+  const propIds = combined.map((row) => row.id);
+  const vouchMap = await getVouchesForProps(client, userId, propIds);
+
+  const feed = combined.map((row) => mapPropsEntry(row, vouchMap[row.id]));
   logInfo('props.feed.loaded', {
     mode: 'supabase',
     durationMs: Date.now() - startedAt,
@@ -360,7 +397,11 @@ export async function listProfileProps(currentUser, profileUserId) {
     throw error;
   }
 
-  const propsEntries = (data || []).map(mapPropsEntry);
+  const rows = data || [];
+  const propIds = rows.map((row) => row.id);
+  const vouchMap = await getVouchesForProps(client, viewerId, propIds);
+
+  const propsEntries = rows.map((row) => mapPropsEntry(row, vouchMap[row.id]));
   logInfo('props.profile.loaded', {
     mode: 'supabase',
     durationMs: Date.now() - startedAt,

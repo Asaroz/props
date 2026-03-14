@@ -6,7 +6,7 @@ export {
 	restoreAuthSession,
 	signUpWithPassword,
 } from './authService';
-export { getCurrentProfile, updateCurrentProfile } from './profileService';
+export { getCurrentProfile, getFriendProfiles, updateCurrentProfile } from './profileService';
 export {
 	listIncomingFriendRequests,
 	listFriends,
@@ -15,3 +15,4 @@ export {
 	sendFriendRequestByDisplayName,
 } from './friendshipService';
 export { createPropsEntry, listProfileProps, listPropsFeed } from './propsService';
+export { addVouch, removeVouch } from './vouchService';

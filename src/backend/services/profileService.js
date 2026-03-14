@@ -166,6 +166,64 @@ export async function getCurrentProfile(currentUser) {
   }
 }
 
+export async function getFriendProfiles(currentUser) {
+  const config = getBackendConfig();
+  const startedAt = Date.now();
+
+  try {
+    if (config.provider !== 'supabase' || !canUseSupabase()) {
+      return [];
+    }
+
+    const userId = await resolveSupabaseUserId(currentUser);
+    if (!userId) {
+      return [];
+    }
+
+    const client = getSupabaseClient();
+
+    const { data: friendships, error: friendshipsError } = await client
+      .from('friendships')
+      .select('user_one_id, user_two_id')
+      .or(`user_one_id.eq.${userId},user_two_id.eq.${userId}`);
+
+    if (friendshipsError) {
+      throw friendshipsError;
+    }
+
+    const friendIds = (friendships || []).map((row) =>
+      row.user_one_id === userId ? row.user_two_id : row.user_one_id
+    );
+
+    if (!friendIds.length) {
+      return [];
+    }
+
+    const { data: profiles, error: profilesError } = await client
+      .from('profiles')
+      .select('id, email, username, display_name, bio, avatar_url, city, created_at, updated_at')
+      .in('id', friendIds);
+
+    if (profilesError) {
+      throw profilesError;
+    }
+
+    const result = (profiles || []).map(mapSupabaseProfile);
+    logInfo('profile.friends.loaded', {
+      mode: 'supabase',
+      count: result.length,
+      durationMs: Date.now() - startedAt,
+    });
+    return result;
+  } catch (error) {
+    logError('profile.friends.failed', error, {
+      mode: config.provider,
+      durationMs: Date.now() - startedAt,
+    });
+    throw error;
+  }
+}
+
 export async function updateCurrentProfile(currentUser, profileInput) {
   const config = getBackendConfig();
   const startedAt = Date.now();
