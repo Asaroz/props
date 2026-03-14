@@ -8,12 +8,48 @@
 const {
   requireEnv,
   createAdminClient,
+  createAnonClient,
   runTest,
   assert,
   assertEqual,
+  findAuthUserByEmail,
   provisionSmokeUsers,
   ensureAuthUsersDeleted,
 } = require('./helpers');
+
+async function provisionOutsiderClient(admin, url, anonKey, runId) {
+  const password = 'SmokeTest_123456';
+  const email = `smokec${runId}@examplemail.com`;
+
+  const { error: createErr } = await admin.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+  });
+
+  if (createErr && createErr.code !== 'email_exists') {
+    throw createErr;
+  }
+
+  const outsider = await findAuthUserByEmail(admin, email);
+  assert(outsider?.id, 'Outsider user was not found in auth.users after provisioning.');
+
+  const clientOutside = createAnonClient(url, anonKey);
+  const { data: loginOutside, error: loginOutsideErr } = await clientOutside.auth.signInWithPassword({
+    email,
+    password,
+  });
+
+  if (loginOutsideErr) {
+    throw loginOutsideErr;
+  }
+
+  return {
+    clientOutside,
+    loginOutside,
+    outsiderUserId: outsider.id,
+  };
+}
 
 async function cleanupGroupsData(admin, userIds) {
   const ids = (userIds || []).filter(Boolean);
@@ -56,6 +92,19 @@ async function runGroupsMiniTests(ctx) {
 
     const { data: ownerMembership, error: ownerErr } = await clientA
       .from('group_memberships')
+      .select('group_id, user_id, role')
+      .eq('group_id', groupRow.id)
+      .eq('user_id', idA)
+      .maybeSingle();
+
+    if (ownerErr) {
+      throw ownerErr;
+    }
+
+    assert(ownerMembership, 'Creator owner membership should be auto-created');
+
+    const { data: duplicateOwner, error: duplicateOwnerErr } = await clientA
+      .from('group_memberships')
       .insert({
         group_id: groupRow.id,
         user_id: idA,
@@ -64,9 +113,8 @@ async function runGroupsMiniTests(ctx) {
       .select('group_id, user_id, role')
       .single();
 
-    if (ownerErr) {
-      throw ownerErr;
-    }
+    assert(duplicateOwnerErr, 'Duplicate owner membership insert should be blocked');
+    void duplicateOwner;
 
     assertEqual(groupRow.created_by, idA, 'Group creator mismatch');
     assertEqual(ownerMembership.role, 'owner', 'Creator must be owner');
@@ -249,6 +297,12 @@ if (require.main === module) {
     try {
       console.log('[smoke-groups-mini] low-load mode: 5 group integration checks');
       ctx = await provisionSmokeUsers(admin, url, anonKey);
+      const outsider = await provisionOutsiderClient(admin, url, anonKey, ctx.runId);
+      ctx = {
+        ...ctx,
+        ...outsider,
+        userIds: [...ctx.userIds, outsider.outsiderUserId],
+      };
       await runGroupsMiniTests(ctx);
       console.log('[smoke-groups-mini] PASS: groups mini tests completed.');
     } finally {
