@@ -514,6 +514,78 @@ export async function listGroupInvitesForGroup(currentUser, groupId) {
   }));
 }
 
+export async function listGroupMemberProfiles(currentUser, groupId) {
+  const normalizedGroupId = String(groupId || '').trim();
+  if (!normalizedGroupId) {
+    throw new Error('groupId is required.');
+  }
+
+  if (!isSupabaseEnabled()) {
+    return mockMemberships
+      .filter((item) => item.groupId === normalizedGroupId)
+      .map((item) => ({
+        id: item.userId,
+        displayName: item.userId,
+        username: item.userId,
+        role: item.role,
+        source: 'mock',
+      }));
+  }
+
+  const userId = await resolveSupabaseUserId(currentUser);
+  if (!userId) {
+    throw new Error('No authenticated Supabase user available for group member listing.');
+  }
+
+  const client = getSupabaseClient();
+
+  const { data: viewerMembership, error: viewerMembershipError } = await client
+    .from('group_memberships')
+    .select('group_id')
+    .eq('group_id', normalizedGroupId)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (viewerMembershipError) {
+    throw viewerMembershipError;
+  }
+
+  if (!viewerMembership) {
+    throw new Error('You are not a member of this group.');
+  }
+
+  const { data: membershipsData, error: membershipsError } = await client
+    .from('group_memberships')
+    .select('user_id, role')
+    .eq('group_id', normalizedGroupId)
+    .order('created_at', { ascending: true });
+
+  if (membershipsError) {
+    throw membershipsError;
+  }
+
+  const roleByUserId = {};
+  const memberUserIds = [];
+  for (const row of membershipsData || []) {
+    if (!row?.user_id) {
+      continue;
+    }
+
+    roleByUserId[row.user_id] = row.role || 'member';
+    memberUserIds.push(row.user_id);
+  }
+
+  const profilesMap = await getProfilesMap(client, memberUserIds);
+
+  return memberUserIds.map((memberId) => ({
+    id: memberId,
+    displayName: profilesMap[memberId]?.displayName || '',
+    username: profilesMap[memberId]?.username || '',
+    role: roleByUserId[memberId] || 'member',
+    source: 'supabase',
+  }));
+}
+
 export async function getGroupDetail(currentUser, groupId) {
   const normalizedGroupId = String(groupId || '').trim();
   if (!normalizedGroupId) {

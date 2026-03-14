@@ -8,7 +8,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { createPropsEntry, getFriendProfiles } from '../backend/services';
+import { createPropsEntry, getFriendProfiles, listGroupMemberProfiles } from '../backend/services';
 import { palette } from '../theme/colors';
 
 function formatFriendLabel(friend) {
@@ -30,8 +30,8 @@ export default function GivePropsScreen({ currentUser, onBack, params }) {
   const selectedGroupId = String(params?.groupId || '').trim();
   const selectedGroupName = String(params?.groupName || '').trim();
 
-  const [friends, setFriends] = useState([]);
-  const [isLoadingFriends, setIsLoadingFriends] = useState(false);
+  const [recipients, setRecipients] = useState([]);
+  const [isLoadingRecipients, setIsLoadingRecipients] = useState(false);
 
   const [form, setForm] = useState({
     toUserId: '',
@@ -43,22 +43,28 @@ export default function GivePropsScreen({ currentUser, onBack, params }) {
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
 
-  const loadFriends = useCallback(async () => {
-    setIsLoadingFriends(true);
+  const loadRecipients = useCallback(async () => {
+    setIsLoadingRecipients(true);
     try {
-      const data = await getFriendProfiles(currentUser);
-      setFriends(data || []);
+      if (selectedGroupId) {
+        const groupMembers = await listGroupMemberProfiles(currentUser, selectedGroupId);
+        const filteredMembers = (groupMembers || []).filter((member) => member.id !== currentUser.id);
+        setRecipients(filteredMembers);
+      } else {
+        const friends = await getFriendProfiles(currentUser);
+        setRecipients(friends || []);
+      }
     } catch (err) {
-      // Non-fatal: friend list is a convenience. Show empty state instead.
-      setFriends([]);
+      // Non-fatal: recipient list is a convenience. Show empty state instead.
+      setRecipients([]);
     } finally {
-      setIsLoadingFriends(false);
+      setIsLoadingRecipients(false);
     }
-  }, [currentUser]);
+  }, [currentUser, selectedGroupId]);
 
   useEffect(() => {
-    loadFriends();
-  }, [loadFriends]);
+    loadRecipients();
+  }, [loadRecipients]);
 
   function updateField(field, value) {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -66,8 +72,8 @@ export default function GivePropsScreen({ currentUser, onBack, params }) {
     setError('');
   }
 
-  function selectFriend(friendId) {
-    updateField('toUserId', friendId);
+  function selectRecipient(recipientId) {
+    updateField('toUserId', recipientId);
   }
 
   async function handleSubmit() {
@@ -79,7 +85,16 @@ export default function GivePropsScreen({ currentUser, onBack, params }) {
       .filter(Boolean);
 
     if (!normalizedToUserId) {
-      setError('Bitte waehle einen Freund aus.');
+      setError(
+        selectedGroupId
+          ? 'Bitte waehle ein Gruppenmitglied aus.'
+          : 'Bitte waehle einen Freund aus.'
+      );
+      return;
+    }
+
+    if (selectedGroupId && !recipients.some((recipient) => recipient.id === normalizedToUserId)) {
+      setError('Im Gruppenkontext sind nur Gruppenmitglieder erlaubt.');
       return;
     }
 
@@ -110,7 +125,7 @@ export default function GivePropsScreen({ currentUser, onBack, params }) {
     }
   }
 
-  const selectedFriend = friends.find((f) => f.id === form.toUserId);
+  const selectedRecipient = recipients.find((f) => f.id === form.toUserId);
 
   return (
     <ScrollView contentContainerStyle={styles.content}>
@@ -123,40 +138,46 @@ export default function GivePropsScreen({ currentUser, onBack, params }) {
 
       <Text style={styles.sectionLabel}>An wen?</Text>
 
-      {isLoadingFriends ? (
+      {isLoadingRecipients ? (
         <View style={styles.loadingRow}>
           <ActivityIndicator size="small" color={palette.accent} />
-          <Text style={styles.loadingText}>Freunde laden...</Text>
+          <Text style={styles.loadingText}>
+            {selectedGroupId ? 'Gruppenmitglieder laden...' : 'Freunde laden...'}
+          </Text>
         </View>
-      ) : friends.length === 0 ? (
-        <Text style={styles.emptyText}>Noch keine Freunde. Verbinde dich zuerst mit jemandem.</Text>
+      ) : recipients.length === 0 ? (
+        <Text style={styles.emptyText}>
+          {selectedGroupId
+            ? 'Keine Gruppenmitglieder verfuegbar.'
+            : 'Noch keine Freunde. Verbinde dich zuerst mit jemandem.'}
+        </Text>
       ) : (
         <View style={styles.friendGrid}>
-          {friends.map((friend) => (
+          {recipients.map((recipient) => (
             <Pressable
-              key={friend.id}
+              key={recipient.id}
               style={[
                 styles.friendChip,
-                form.toUserId === friend.id && styles.friendChipSelected,
+                form.toUserId === recipient.id && styles.friendChipSelected,
               ]}
-              onPress={() => selectFriend(friend.id)}
+              onPress={() => selectRecipient(recipient.id)}
             >
               <Text
                 style={[
                   styles.friendChipText,
-                  form.toUserId === friend.id && styles.friendChipTextSelected,
+                  form.toUserId === recipient.id && styles.friendChipTextSelected,
                 ]}
               >
-                {formatFriendLabel(friend)}
+                {formatFriendLabel(recipient)}
               </Text>
             </Pressable>
           ))}
         </View>
       )}
 
-      {selectedFriend ? (
+      {selectedRecipient ? (
         <Text style={styles.selectedLabel}>
-          Ausgewaehlt: {formatFriendLabel(selectedFriend)}
+          Ausgewaehlt: {formatFriendLabel(selectedRecipient)}
         </Text>
       ) : null}
 

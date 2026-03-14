@@ -179,6 +179,23 @@ async function assertGroupMembership(client, groupId, userId) {
   }
 }
 
+async function assertGroupRecipientMembership(client, groupId, recipientUserId) {
+  const { data, error } = await client
+    .from('group_memberships')
+    .select('group_id')
+    .eq('group_id', groupId)
+    .eq('user_id', recipientUserId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    throw new Error('You can only give group props to a member of this group.');
+  }
+}
+
 export async function createPropsEntry(currentUser, input) {
   const config = getBackendConfig();
   const startedAt = Date.now();
@@ -245,11 +262,12 @@ export async function createPropsEntry(currentUser, input) {
 
   if (groupId) {
     await assertGroupMembership(client, groupId, fromUserId);
-  }
-
-  const friendIds = await listFriendIds(client, fromUserId);
-  if (!friendIds.includes(toUserId)) {
-    throw new Error('You can only give props to a friend.');
+    await assertGroupRecipientMembership(client, groupId, toUserId);
+  } else {
+    const friendIds = await listFriendIds(client, fromUserId);
+    if (!friendIds.includes(toUserId)) {
+      throw new Error('You can only give props to a friend.');
+    }
   }
 
   const { data, error } = await client

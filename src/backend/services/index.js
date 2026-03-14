@@ -24,6 +24,7 @@ export {
 export {
 	createGroup,
 	getGroupDetail,
+	listGroupMemberProfiles,
 	listGroupInvitesForGroup,
 	listGroupsForUser,
 	listIncomingGroupInvites,
