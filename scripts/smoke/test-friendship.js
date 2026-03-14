@@ -37,6 +37,29 @@ async function runFriendshipTests(ctx) {
 
     assertEqual(request.status, 'pending', 'Request status after send');
 
+    const { data: incomingForA, error: incomingErr } = await clientA
+      .from('friend_requests')
+      .select('id')
+      .eq('receiver_id', idA)
+      .eq('status', 'pending');
+
+    if (incomingErr) {
+      throw incomingErr;
+    }
+
+    const { data: incomingForB, error: senderInboxErr } = await clientB
+      .from('friend_requests')
+      .select('id')
+      .eq('receiver_id', idB)
+      .eq('status', 'pending');
+
+    if (senderInboxErr) {
+      throw senderInboxErr;
+    }
+
+    assert((incomingForA || []).some((row) => row.id === request.id), 'Receiver should see pending incoming request.');
+    assert(!(incomingForB || []).some((row) => row.id === request.id), 'Sender inbox should not include this request.');
+
     const { data: rejected, error: rejectErr } = await clientA
       .from('friend_requests')
       .update({ status: 'rejected' })

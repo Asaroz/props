@@ -21,6 +21,7 @@ const {
 const { runAuthTests } = require('./test-auth');
 const { runProfileTests } = require('./test-profile');
 const { runFriendshipTests } = require('./test-friendship');
+const { runPropsTests } = require('./test-props');
 
 async function main() {
   const { url, anonKey, serviceRoleKey } = requireEnv();
@@ -63,6 +64,9 @@ async function main() {
 
     console.log('[smoke] --- friendship ---');
     await runFriendshipTests(ctx);
+
+    console.log('[smoke] --- props ---');
+    await runPropsTests(ctx);
 
     console.log('[smoke] PASS: all tests completed.');
   } finally {

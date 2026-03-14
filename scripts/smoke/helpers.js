@@ -105,12 +105,27 @@ async function runTest(name, fn) {
 // ---------------------------------------------------------------------------
 
 async function findAuthUserByEmail(admin, email) {
-  const { data, error } = await admin.auth.admin.listUsers({ page: 1, perPage: 200 });
-  if (error) {
-    throw error;
-  }
+  const perPage = 200;
+  let page = 1;
 
-  return (data?.users || []).find((u) => u.email === email) || null;
+  while (true) {
+    const { data, error } = await admin.auth.admin.listUsers({ page, perPage });
+    if (error) {
+      throw error;
+    }
+
+    const users = data?.users || [];
+    const match = users.find((u) => u.email === email) || null;
+    if (match) {
+      return match;
+    }
+
+    if (users.length < perPage) {
+      return null;
+    }
+
+    page += 1;
+  }
 }
 
 async function ensureAuthUsersDeleted(admin, userIds) {
