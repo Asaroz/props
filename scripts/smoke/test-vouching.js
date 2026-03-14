@@ -1,7 +1,7 @@
 /**
  * Vouching smoke tests.
  * Covers: eligible vouch, duplicate rejection, unvouch, ineligible vouch rejection,
- * and vouch count in feed payload.
+ * self-vouch rejection, group-membership enforcement and daily vouch limit.
  *
  * Run standalone:
  *   node scripts/smoke/test-vouching.js
@@ -111,15 +111,16 @@ async function findIneligibleSharedUser(admin, url, anonKey, password, excludedU
   throw new Error('No ineligible shared test user available for the negative vouching case.');
 }
 
-async function cleanupPropArtifacts(admin, propId) {
-  if (!propId) {
+async function cleanupPropArtifacts(admin, propIds) {
+  const ids = (propIds || []).filter(Boolean);
+  if (!ids.length) {
     return;
   }
 
   const { error: deleteVouchesError } = await admin
     .from('prop_vouches')
     .delete()
-    .eq('prop_id', propId);
+    .in('prop_id', ids);
 
   if (deleteVouchesError) {
     throw deleteVouchesError;
@@ -128,10 +129,25 @@ async function cleanupPropArtifacts(admin, propId) {
   const { error: deletePropError } = await admin
     .from('props_entries')
     .delete()
-    .eq('id', propId);
+    .in('id', ids);
 
   if (deletePropError) {
     throw deletePropError;
+  }
+}
+
+async function cleanupGroupArtifacts(admin, groupId) {
+  if (!groupId) {
+    return;
+  }
+
+  const { error: deleteGroupError } = await admin
+    .from('groups')
+    .delete()
+    .eq('id', groupId);
+
+  if (deleteGroupError) {
+    throw deleteGroupError;
   }
 }
 
@@ -156,6 +172,8 @@ async function runVouchingTests(ctx) {
   const idC = userC.userId;
   const idD = userD.userId;
   let propId;
+  let groupId;
+  const createdPropIds = [];
 
   try {
     // Friendships: A-B, A-C, B-C. D has no friendship with A or B.
@@ -171,6 +189,19 @@ async function runVouchingTests(ctx) {
     });
 
     propId = propEntry.id;
+    createdPropIds.push(propId);
+
+    await runTest('vouching: self-vouch is blocked', async () => {
+      const { error } = await clientA
+        .from('prop_vouches')
+        .insert({ prop_id: propId, user_id: idA });
+
+      assert(error, 'Expected an error for self-vouch, got none');
+      assert(
+        String(error.message || '').toLowerCase().includes('direct participants cannot vouch'),
+        `Unexpected self-vouch error: ${error.code} ${error.message}`
+      );
+    });
 
     // C is friend of both A and B — eligible voucher
     await runTest('vouching: eligible user (C) can vouch', async () => {
@@ -277,8 +308,102 @@ async function runVouchingTests(ctx) {
       assert(data.length >= 1, `Expected at least 1 vouch, got ${data.length}`);
     });
 
+    await runTest('vouching: group-linked prop requires voucher membership', async () => {
+      const { data: groupRow, error: groupErr } = await clientA
+        .from('groups')
+        .insert({
+          name: `Vouch Group ${Date.now()}`,
+          description: 'Issue #19 vouching in groups',
+          cover_image_url: null,
+          created_by: idA,
+        })
+        .select('id')
+        .single();
+
+      if (groupErr) {
+        throw groupErr;
+      }
+
+      groupId = groupRow.id;
+
+      const groupProp = await createPropEntry(clientA, idA, idB, 'Issue #19 group-linked prop');
+      createdPropIds.push(groupProp.id);
+
+      const { error: linkErr } = await clientA
+        .from('group_props_links')
+        .insert({
+          group_id: groupId,
+          prop_id: groupProp.id,
+          linked_by: idA,
+        });
+
+      if (linkErr) {
+        throw linkErr;
+      }
+
+      const { error: nonMemberErr } = await clientC
+        .from('prop_vouches')
+        .insert({ prop_id: groupProp.id, user_id: idC });
+
+      assert(nonMemberErr, 'Expected non-member group vouch to be blocked');
+      assert(
+        String(nonMemberErr.message || '').toLowerCase().includes('member of all linked groups'),
+        `Unexpected non-member group vouch error: ${nonMemberErr.code} ${nonMemberErr.message}`
+      );
+
+      const { error: addMembershipErr } = await admin
+        .from('group_memberships')
+        .insert({ group_id: groupId, user_id: idC, role: 'member' });
+
+      if (addMembershipErr && addMembershipErr.code !== '23505') {
+        throw addMembershipErr;
+      }
+
+      const { error: memberVouchErr } = await clientC
+        .from('prop_vouches')
+        .insert({ prop_id: groupProp.id, user_id: idC });
+
+      if (memberVouchErr) {
+        throw new Error(`Expected member group vouch to succeed, got: ${memberVouchErr.message}`);
+      }
+    });
+
+    await runTest('vouching: daily limit is enforced reproducibly', async () => {
+      const defaultDailyLimit = 10;
+
+      await adminEnsureFriendship(admin, idA, idD);
+      await adminEnsureFriendship(admin, idB, idD);
+
+      for (let i = 0; i < defaultDailyLimit; i += 1) {
+        const dailyProp = await createPropEntry(clientA, idA, idB, `Issue #19 daily-limit seed ${i}`);
+        createdPropIds.push(dailyProp.id);
+
+        const { error } = await clientD
+          .from('prop_vouches')
+          .insert({ prop_id: dailyProp.id, user_id: idD });
+
+        if (error) {
+          throw new Error(`Expected vouch ${i + 1}/${defaultDailyLimit} to succeed, got: ${error.message}`);
+        }
+      }
+
+      const overflowProp = await createPropEntry(clientA, idA, idB, 'Issue #19 daily-limit overflow');
+      createdPropIds.push(overflowProp.id);
+
+      const { error: overflowError } = await clientD
+        .from('prop_vouches')
+        .insert({ prop_id: overflowProp.id, user_id: idD });
+
+      assert(overflowError, 'Expected daily limit overflow to be blocked');
+      assert(
+        String(overflowError.message || '').toLowerCase().includes('daily vouch limit reached'),
+        `Unexpected daily-limit error: ${overflowError.code} ${overflowError.message}`
+      );
+    });
+
   } finally {
-    await cleanupPropArtifacts(admin, propId);
+    await cleanupGroupArtifacts(admin, groupId);
+    await cleanupPropArtifacts(admin, createdPropIds);
   }
 }
 
