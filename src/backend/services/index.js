@@ -21,3 +21,12 @@ export {
 	markAllNotificationsRead,
 	markNotificationRead,
 } from './notificationService';
+export {
+	createGroup,
+	getGroupDetail,
+	listGroupInvitesForGroup,
+	listGroupsForUser,
+	listIncomingGroupInvites,
+	respondToGroupInvite,
+	sendGroupInviteByDisplayName,
+} from './groupService';

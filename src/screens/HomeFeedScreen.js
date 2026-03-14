@@ -468,6 +468,11 @@ export default function HomeFeedScreen({ currentUser, onLogout, onNavigate }) {
         </Pressable>
       </View>
 
+      <Pressable style={styles.groupsHubEntry} onPress={() => onNavigate('groupsHub')}>
+        <Text style={styles.groupsHubEntryTitle}>Groups Hub</Text>
+        <Text style={styles.groupsHubEntryCaption}>Open groups, invites, and group detail scaffold</Text>
+      </Pressable>
+
       {activePanel === 'notifications' ? (
         <View style={styles.profileCard}>
           <View style={styles.feedHeadingRow}>
@@ -727,6 +732,24 @@ const styles = StyleSheet.create({
   },
   placeholderItem: {
     flex: 1,
+  },
+  groupsHubEntry: {
+    borderWidth: 1,
+    borderColor: palette.border,
+    borderRadius: 12,
+    padding: 12,
+    backgroundColor: palette.card,
+    marginBottom: 18,
+  },
+  groupsHubEntryTitle: {
+    color: palette.textPrimary,
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  groupsHubEntryCaption: {
+    color: palette.textSecondary,
+    fontSize: 12,
   },
   feedHeadingRow: {
     flexDirection: 'row',

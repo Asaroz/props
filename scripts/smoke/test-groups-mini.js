@@ -202,13 +202,10 @@ async function runGroupsMiniTests(ctx) {
 
     const { data: memberRow, error: memberErr } = await clientA
       .from('group_memberships')
-      .insert({
-        group_id: group.id,
-        user_id: idB,
-        role: 'member',
-      })
       .select('group_id, user_id, role')
-      .single();
+      .eq('group_id', group.id)
+      .eq('user_id', idB)
+      .maybeSingle();
 
     if (memberErr) {
       throw memberErr;
@@ -223,7 +220,8 @@ async function runGroupsMiniTests(ctx) {
       .select('id, status');
 
     assertEqual(acceptedInvite.status, 'accepted', 'Invite should be accepted');
-    assert(memberRow.user_id === idB, 'Membership for invitee expected');
+    assert(memberRow?.user_id === idB, 'Membership bootstrap for invitee expected');
+    assertEqual(memberRow.role, 'member', 'Bootstrap membership must be member role');
     assert(!secondAcceptErr, 'Second accept query should not hard-fail');
     assert((secondAccept || []).length === 0, 'Second accept should affect no rows');
   });
