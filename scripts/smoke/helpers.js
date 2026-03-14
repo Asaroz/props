@@ -147,6 +147,28 @@ function isRateLimitError(error) {
   return String(error?.message || '').toLowerCase().includes('rate limit');
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function createUserWithRetry(admin, payload, attempts = 3) {
+  let lastError = null;
+
+  for (let index = 0; index < attempts; index += 1) {
+    const { data, error } = await admin.auth.admin.createUser(payload);
+    if (!error) {
+      return { data, error: null, attempt: index + 1 };
+    }
+
+    lastError = error;
+    if (index < attempts - 1) {
+      await sleep(500 * (index + 1));
+    }
+  }
+
+  return { data: null, error: lastError, attempt: attempts };
+}
+
 async function provisionUser(admin, url, anonKey, payload) {
   try {
     const { error } = await createAnonClient(url, anonKey).auth.signUp(payload);
@@ -160,7 +182,7 @@ async function provisionUser(admin, url, anonKey, payload) {
       ? 'rate-limit'
       : 'signup-error';
 
-    const { data, error: adminErr } = await admin.auth.admin.createUser({
+    const { data, error: adminErr, attempt } = await createUserWithRetry(admin, {
       email: payload.email,
       password: payload.password,
       email_confirm: true,
@@ -172,10 +194,93 @@ async function provisionUser(admin, url, anonKey, payload) {
     });
 
     if (adminErr) {
+      console.log(
+        `[smoke] admin createUser failed for ${payload.email} after ${attempt} attempts: ${adminErr.message}`
+      );
+      console.log(
+        `[smoke] signup fallback reason for ${payload.email}: ${err?.message || 'unknown-signup-error'}`
+      );
       throw adminErr;
     }
 
     return { mode: 'admin-fallback', userId: data.user.id, reason: fallbackReason };
+  }
+}
+
+async function resetSmokeUserData(admin, userIds) {
+  const ids = (userIds || []).filter(Boolean);
+  if (!ids.length) {
+    return;
+  }
+
+  // Remove user-scoped rows so shared users can be reused without flaky state.
+  await admin.from('notifications').delete().in('user_id', ids);
+  await admin.from('notifications').delete().in('actor_id', ids);
+
+  await admin.from('friend_requests').delete().or(
+    `sender_id.in.(${ids.join(',')}),receiver_id.in.(${ids.join(',')})`
+  );
+
+  await admin.from('friendships').delete().or(
+    `user_one_id.in.(${ids.join(',')}),user_two_id.in.(${ids.join(',')})`
+  );
+
+  await admin.from('props_entries').delete().or(
+    `from_user_id.in.(${ids.join(',')}),to_user_id.in.(${ids.join(',')})`
+  );
+
+  await admin.from('prop_vouches').delete().in('user_id', ids);
+}
+
+async function loginSmokePair(url, anonKey, emailA, emailB, password) {
+  const clientA = createAnonClient(url, anonKey);
+  const clientB = createAnonClient(url, anonKey);
+
+  const { data: loginA, error: errA } = await clientA.auth.signInWithPassword({
+    email: emailA,
+    password,
+  });
+  if (errA) {
+    throw errA;
+  }
+
+  const { data: loginB, error: errB } = await clientB.auth.signInWithPassword({
+    email: emailB,
+    password,
+  });
+  if (errB) {
+    throw errB;
+  }
+
+  return { clientA, clientB, loginA, loginB };
+}
+
+async function ensureProfileRow(admin, user, payload) {
+  if (!user?.id) {
+    throw new Error('Cannot ensure profile without auth user id.');
+  }
+
+  const usernameBase = String(payload?.options?.data?.username || 'user')
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '') || 'user';
+  const suffix = String(user.id).replace(/-/g, '').slice(0, 6);
+  const username = `${usernameBase}_${suffix}`;
+
+  const { error } = await admin.from('profiles').upsert(
+    {
+      id: user.id,
+      email: payload.email,
+      username,
+      display_name: payload?.options?.data?.displayName || username,
+      bio: '',
+      avatar_url: '',
+      city: payload?.options?.data?.city || '',
+    },
+    { onConflict: 'id' }
+  );
+
+  if (error) {
+    throw error;
   }
 }
 
@@ -188,16 +293,17 @@ async function provisionUser(admin, url, anonKey, payload) {
 async function provisionSmokeUsers(admin, url, anonKey) {
   const runId = `${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
   const password = 'SmokeTest_123456';
+  const runSuffix = runId.slice(-6);
 
   const userAPayload = {
     email: `smokea${runId}@examplemail.com`,
     password,
-    options: { data: { username: `smoke_a_${runId}`, displayName: 'Smoke A', city: 'Berlin' } },
+    options: { data: { username: `smoke_a_${runId}`, displayName: `Smoke A ${runSuffix}`, city: 'Berlin' } },
   };
   const userBPayload = {
     email: `smokeb${runId}@examplemail.com`,
     password,
-    options: { data: { username: `smoke_b_${runId}`, displayName: 'Smoke B', city: 'Hamburg' } },
+    options: { data: { username: `smoke_b_${runId}`, displayName: `Smoke B ${runSuffix}`, city: 'Hamburg' } },
   };
 
   const resultA = await provisionUser(admin, url, anonKey, userAPayload);
@@ -217,27 +323,21 @@ async function provisionSmokeUsers(admin, url, anonKey) {
   assert(authUserA?.id, 'User A was not found in auth.users after provisioning.');
   assert(authUserB?.id, 'User B was not found in auth.users after provisioning.');
 
+  await ensureProfileRow(admin, authUserA, userAPayload);
+  await ensureProfileRow(admin, authUserB, userBPayload);
+
   await admin.auth.admin.updateUserById(authUserA.id, { email_confirm: true });
   await admin.auth.admin.updateUserById(authUserB.id, { email_confirm: true });
 
-  const clientA = createAnonClient(url, anonKey);
-  const clientB = createAnonClient(url, anonKey);
+  const { clientA, clientB, loginA, loginB } = await loginSmokePair(
+    url,
+    anonKey,
+    userAPayload.email,
+    userBPayload.email,
+    password
+  );
 
-  const { data: loginA, error: errA } = await clientA.auth.signInWithPassword({
-    email: userAPayload.email,
-    password,
-  });
-  if (errA) {
-    throw errA;
-  }
-
-  const { data: loginB, error: errB } = await clientB.auth.signInWithPassword({
-    email: userBPayload.email,
-    password,
-  });
-  if (errB) {
-    throw errB;
-  }
+  await resetSmokeUserData(admin, [authUserA.id, authUserB.id]);
 
   return {
     clientA,
