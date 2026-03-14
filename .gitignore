@@ -23,3 +23,11 @@ Thumbs.db
 
 # Local test-user reference (credentials, never commit)
 testusers.local.md
+
+# Local Python/OpenViking artifacts
+.venv/
+.venv*/
+venv/
+__pycache__/
+*.pyc
+.openviking/
