@@ -71,6 +71,7 @@ async function runGroupsMiniTests(ctx) {
   const idB = loginB.user.id;
 
   let group;
+  let otherGroup;
   let invite;
   let prop;
 
@@ -153,6 +154,33 @@ async function runGroupsMiniTests(ctx) {
     invite = inviteRow;
   });
 
+  await runTest('groups-mini: only owner can update group settings', async () => {
+    const { data: ownerUpdatedGroup, error: ownerUpdateErr } = await clientA
+      .from('groups')
+      .update({
+        description: 'Issue #15 owner-managed settings',
+      })
+      .eq('id', group.id)
+      .select('id, description')
+      .single();
+
+    if (ownerUpdateErr) {
+      throw ownerUpdateErr;
+    }
+
+    const { error: memberUpdateErr } = await clientB
+      .from('groups')
+      .update({
+        description: 'Issue #15 forbidden member update',
+      })
+      .eq('id', group.id)
+      .select('id')
+      .single();
+
+    assert(memberUpdateErr, 'Non-owner group settings update should be blocked by RLS');
+    assertEqual(ownerUpdatedGroup.description, 'Issue #15 owner-managed settings', 'Owner settings update mismatch');
+  });
+
   await runTest('groups-mini: invite acceptance creates membership and is idempotent-safe', async () => {
     const nowIso = new Date().toISOString();
 
@@ -230,6 +258,92 @@ async function runGroupsMiniTests(ctx) {
     assert((memberView || []).length >= 2, 'Member should see full membership list');
   });
 
+  await runTest('groups-mini: only owner can manage member roles and removals', async () => {
+    assert(ctx.outsiderUserId, 'Outsider user id is required for owner/member management checks');
+
+    const { data: outsiderMembership, error: outsiderInsertErr } = await clientA
+      .from('group_memberships')
+      .insert({
+        group_id: group.id,
+        user_id: ctx.outsiderUserId,
+        role: 'member',
+      })
+      .select('group_id, user_id, role')
+      .single();
+
+    if (outsiderInsertErr) {
+      throw outsiderInsertErr;
+    }
+
+    const { error: nonOwnerInsertMemberErr } = await clientB
+      .from('group_memberships')
+      .insert({
+        group_id: group.id,
+        user_id: ctx.outsiderUserId,
+        role: 'member',
+      })
+      .select('group_id, user_id, role')
+      .single();
+
+    assert(nonOwnerInsertMemberErr, 'Non-owner member insert should be blocked by RLS');
+
+    const { error: nonOwnerInsertOwnerErr } = await clientB
+      .from('group_memberships')
+      .insert({
+        group_id: group.id,
+        user_id: idB,
+        role: 'owner',
+      })
+      .select('group_id, user_id, role')
+      .single();
+
+    assert(nonOwnerInsertOwnerErr, 'Non-owner owner insert should be blocked by RLS');
+
+    const { error: nonOwnerRoleEscalationErr } = await clientB
+      .from('group_memberships')
+      .update({ role: 'owner' })
+      .eq('group_id', group.id)
+      .eq('user_id', ctx.outsiderUserId)
+      .select('group_id, user_id, role')
+      .single();
+
+    assert(nonOwnerRoleEscalationErr, 'Non-owner role update should be blocked by RLS');
+
+    const { error: nonOwnerOwnerEscalationErr } = await clientB
+      .from('group_memberships')
+      .update({ role: 'owner' })
+      .eq('group_id', group.id)
+      .eq('user_id', idB)
+      .select('group_id, user_id, role')
+      .single();
+
+    assert(nonOwnerOwnerEscalationErr, 'Member self-escalation to owner should be blocked by RLS');
+
+    const { error: nonOwnerDeleteMemberErr } = await clientB
+      .from('group_memberships')
+      .delete()
+      .eq('group_id', group.id)
+      .eq('user_id', ctx.outsiderUserId)
+      .select('group_id, user_id')
+      .single();
+
+    assert(nonOwnerDeleteMemberErr, 'Non-owner member removal should be blocked by RLS');
+
+    const { data: ownerDeleteRows, error: ownerDeleteErr } = await clientA
+      .from('group_memberships')
+      .delete()
+      .eq('group_id', group.id)
+      .eq('user_id', ctx.outsiderUserId)
+      .select('group_id, user_id');
+
+    if (ownerDeleteErr) {
+      throw ownerDeleteErr;
+    }
+
+    assertEqual((ownerDeleteRows || []).length, 1, 'Owner should be able to remove non-owner members');
+    assertEqual(outsiderMembership.role, 'member', 'Inserted outsider membership role mismatch');
+  });
+
   await runTest('groups-mini: props link unique and member-bound', async () => {
     const { error: friendshipErr } = await clientA
       .from('friendships')
@@ -285,7 +399,55 @@ async function runGroupsMiniTests(ctx) {
     prop = propRow;
   });
 
+  await runTest('groups-mini: cross-group read/write isolation is enforced', async () => {
+    const { data: otherGroupRow, error: otherGroupErr } = await clientB
+      .from('groups')
+      .insert({
+        name: `Smoke Group B ${ctx.runId.slice(-6)}`,
+        description: 'Issue #14 cross-group isolation smoke',
+        cover_image_url: null,
+        created_by: idB,
+      })
+      .select('id, created_by')
+      .single();
+
+    if (otherGroupErr) {
+      throw otherGroupErr;
+    }
+
+    otherGroup = otherGroupRow;
+
+    const { data: readBlockedRows, error: readBlockedErr } = await clientA
+      .from('group_memberships')
+      .select('user_id, role')
+      .eq('group_id', otherGroup.id);
+
+    assert(!readBlockedErr, 'Cross-group membership query should be policy-filtered, not crash');
+    assertEqual((readBlockedRows || []).length, 0, 'Non-member must not read other group memberships');
+
+    const { data: hiddenGroupRows, error: hiddenGroupErr } = await clientA
+      .from('groups')
+      .select('id, name')
+      .eq('id', otherGroup.id);
+
+    assert(!hiddenGroupErr, 'Cross-group group query should be policy-filtered, not crash');
+    assertEqual((hiddenGroupRows || []).length, 0, 'Non-member must not read other group details');
+
+    const { error: writeBlockedErr } = await clientA
+      .from('group_props_links')
+      .insert({
+        group_id: otherGroup.id,
+        prop_id: prop.id,
+        linked_by: idA,
+      })
+      .select('id')
+      .single();
+
+    assert(writeBlockedErr, 'Non-member must not write links into another group');
+  });
+
   void prop;
+  void otherGroup;
 }
 
 if (require.main === module) {
@@ -295,7 +457,7 @@ if (require.main === module) {
 
   (async () => {
     try {
-      console.log('[smoke-groups-mini] low-load mode: 5 group integration checks');
+      console.log('[smoke-groups-mini] low-load mode: 8 group integration checks');
       ctx = await provisionSmokeUsers(admin, url, anonKey);
       const outsider = await provisionOutsiderClient(admin, url, anonKey, ctx.runId);
       ctx = {
