@@ -23,6 +23,7 @@ const { runProfileTests } = require('./test-profile');
 const { runFriendshipTests } = require('./test-friendship');
 const { runPropsTests } = require('./test-props');
 const { runRlsBoundaryTests } = require('./test-rls-boundaries');
+const { runVouchingTests } = require('./test-vouching');
 
 async function main() {
   const { url, anonKey, serviceRoleKey } = requireEnv();
@@ -72,6 +73,9 @@ async function main() {
 
     console.log('[smoke] --- rls-boundaries ---');
     await runRlsBoundaryTests(ctx);
+
+    console.log('[smoke] --- vouching ---');
+    await runVouchingTests({ ...ctx, url, anonKey, admin });
 
     console.log('[smoke] PASS: all tests completed.');
   } finally {
