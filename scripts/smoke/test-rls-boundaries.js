@@ -130,19 +130,17 @@ async function runRlsBoundaryTests(ctx) {
       .select('id')
       .maybeSingle();
 
-    if (error) {
-      return;
+    if (data?.id) {
+      // Clean up the leaked row before failing so the DB stays consistent.
+      await clientA.from('props_entries').delete().eq('id', data.id);
+      throw new Error(
+        'Non-friend props insert succeeded — friendship-enforcement trigger (20260315004000) is not active in this environment.'
+      );
     }
 
-    if (data?.id) {
-      console.log(
-        '[smoke] WARN rls: non-friend props insert succeeded; friendship-enforcement migration may not be applied in this environment yet.'
-      );
-
-      const { error: cleanupErr } = await clientA.from('props_entries').delete().eq('id', data.id);
-      if (cleanupErr) {
-        throw cleanupErr;
-      }
+    // error is expected (trigger should raise an exception)
+    if (!error) {
+      throw new Error('Expected an error from the friendship-enforcement trigger but got neither data nor error.');
     }
   });
 }
