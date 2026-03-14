@@ -22,6 +22,7 @@ const { runAuthTests } = require('./test-auth');
 const { runProfileTests } = require('./test-profile');
 const { runFriendshipTests } = require('./test-friendship');
 const { runPropsTests } = require('./test-props');
+const { runRlsBoundaryTests } = require('./test-rls-boundaries');
 
 async function main() {
   const { url, anonKey, serviceRoleKey } = requireEnv();
@@ -34,6 +35,7 @@ async function main() {
   try {
     ctx = await provisionSmokeUsers(admin, url, anonKey);
     ctx.env = { url, anonKey };
+    ctx.admin = admin;
 
     console.log(`[smoke] Run id: ${ctx.runId}`);
     console.log('[smoke] --- auth ---');
@@ -67,6 +69,9 @@ async function main() {
 
     console.log('[smoke] --- props ---');
     await runPropsTests(ctx);
+
+    console.log('[smoke] --- rls-boundaries ---');
+    await runRlsBoundaryTests(ctx);
 
     console.log('[smoke] PASS: all tests completed.');
   } finally {
