@@ -26,7 +26,10 @@ function formatFriendLabel(friend) {
   return displayName || username || String(friend.id || '').slice(0, 8);
 }
 
-export default function GivePropsScreen({ currentUser, onBack }) {
+export default function GivePropsScreen({ currentUser, onBack, params }) {
+  const selectedGroupId = String(params?.groupId || '').trim();
+  const selectedGroupName = String(params?.groupName || '').trim();
+
   const [friends, setFriends] = useState([]);
   const [isLoadingFriends, setIsLoadingFriends] = useState(false);
 
@@ -94,6 +97,7 @@ export default function GivePropsScreen({ currentUser, onBack }) {
         toUserId: normalizedToUserId,
         content: normalizedContent,
         tags,
+        groupId: selectedGroupId || undefined,
       });
       setNotice('Props vergeben!');
       setForm({ toUserId: '', content: '', tags: '' });
@@ -153,6 +157,12 @@ export default function GivePropsScreen({ currentUser, onBack }) {
       {selectedFriend ? (
         <Text style={styles.selectedLabel}>
           Ausgewaehlt: {formatFriendLabel(selectedFriend)}
+        </Text>
+      ) : null}
+
+      {selectedGroupId ? (
+        <Text style={styles.groupLabel}>
+          Gruppe: {selectedGroupName || selectedGroupId.slice(0, 8)}
         </Text>
       ) : null}
 
@@ -271,6 +281,13 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: palette.accent,
     marginTop: 4,
+    marginBottom: 4,
+    fontWeight: '600',
+  },
+  groupLabel: {
+    fontSize: 13,
+    color: palette.textSecondary,
+    marginTop: 2,
     marginBottom: 4,
     fontWeight: '600',
   },

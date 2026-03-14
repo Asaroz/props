@@ -91,6 +91,7 @@ function mapMockPropsEntry(row) {
     toUserId: row.toUserId,
     content: row.content || '',
     tags: Array.isArray(row.tags) ? row.tags : [],
+    groupId: row.groupId || null,
     createdAt: row.createdAt,
     source: 'mock',
   };
@@ -161,9 +162,27 @@ function dedupePropsRows(rows) {
   return deduped;
 }
 
+async function assertGroupMembership(client, groupId, userId) {
+  const { data, error } = await client
+    .from('group_memberships')
+    .select('group_id')
+    .eq('group_id', groupId)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    throw new Error('You can only post group props as a group member.');
+  }
+}
+
 export async function createPropsEntry(currentUser, input) {
   const config = getBackendConfig();
   const startedAt = Date.now();
+  const requestedGroupId = String(input?.groupId || '').trim() || null;
 
   logInfo('props.create.requested', {
     mode: config.provider,
@@ -171,6 +190,7 @@ export async function createPropsEntry(currentUser, input) {
     hasTargetUser: Boolean(String(input?.toUserId || '').trim()),
     hasContent: Boolean(String(input?.content || '').trim()),
     tagCount: Array.isArray(input?.tags) ? input.tags.length : 0,
+    hasGroupId: Boolean(requestedGroupId),
   });
 
   try {
@@ -186,6 +206,7 @@ export async function createPropsEntry(currentUser, input) {
       toUserId,
       content,
       tags,
+      groupId: requestedGroupId,
       createdAt: new Date().toISOString(),
       source: 'mock',
     };
@@ -210,6 +231,7 @@ export async function createPropsEntry(currentUser, input) {
   const toUserId = String(input?.toUserId || '').trim();
   const content = String(input?.content || '').trim();
   const tags = normalizeTags(input?.tags);
+  const groupId = requestedGroupId;
 
   if (!toUserId) {
     throw new Error('toUserId is required.');
@@ -220,6 +242,11 @@ export async function createPropsEntry(currentUser, input) {
   }
 
   const client = getSupabaseClient();
+
+  if (groupId) {
+    await assertGroupMembership(client, groupId, fromUserId);
+  }
+
   const friendIds = await listFriendIds(client, fromUserId);
   if (!friendIds.includes(toUserId)) {
     throw new Error('You can only give props to a friend.');
@@ -240,13 +267,33 @@ export async function createPropsEntry(currentUser, input) {
     throw error;
   }
 
+  if (groupId) {
+    const { error: linkError } = await client
+      .from('group_props_links')
+      .insert({
+        group_id: groupId,
+        prop_id: data.id,
+        linked_by: fromUserId,
+      })
+      .select('id')
+      .single();
+
+    if (linkError) {
+      throw linkError;
+    }
+  }
+
   const mapped = mapPropsEntry(data);
   logInfo('props.create.completed', {
     mode: 'supabase',
     durationMs: Date.now() - startedAt,
     tagCount: mapped?.tags?.length || 0,
+    hasGroupId: Boolean(groupId),
   });
-  return mapped;
+  return {
+    ...mapped,
+    groupId,
+  };
   } catch (error) {
     logError('props.create.failed', error, {
       mode: config.provider,

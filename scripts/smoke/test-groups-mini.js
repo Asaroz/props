@@ -607,6 +607,66 @@ async function runGroupsMiniTests(ctx) {
     assert(writeBlockedErr, 'Non-member must not write links into another group');
   });
 
+  await runTest('groups-mini: member can post group props, non-member cannot', async () => {
+    const { data: memberProp, error: memberPropErr } = await clientB
+      .from('props_entries')
+      .insert({
+        from_user_id: idB,
+        to_user_id: idA,
+        content: 'Issue #18 member post into own group',
+        category: 'group-post-member',
+      })
+      .select('id')
+      .single();
+
+    if (memberPropErr) {
+      throw memberPropErr;
+    }
+
+    const { data: memberLink, error: memberLinkErr } = await clientB
+      .from('group_props_links')
+      .insert({
+        group_id: otherGroup.id,
+        prop_id: memberProp.id,
+        linked_by: idB,
+      })
+      .select('id, group_id, prop_id')
+      .single();
+
+    if (memberLinkErr) {
+      throw memberLinkErr;
+    }
+
+    const { data: outsiderProp, error: outsiderPropErr } = await clientA
+      .from('props_entries')
+      .insert({
+        from_user_id: idA,
+        to_user_id: idB,
+        content: 'Issue #18 non-member post into foreign group',
+        category: 'group-post-blocked',
+      })
+      .select('id')
+      .single();
+
+    if (outsiderPropErr) {
+      throw outsiderPropErr;
+    }
+
+    const { error: outsiderLinkErr } = await clientA
+      .from('group_props_links')
+      .insert({
+        group_id: otherGroup.id,
+        prop_id: outsiderProp.id,
+        linked_by: idA,
+      })
+      .select('id')
+      .single();
+
+    assert(outsiderLinkErr, 'Non-member must not create group props in target group');
+    assertEqual(memberLink.group_id, otherGroup.id, 'Member link group mismatch');
+    assertEqual(memberLink.prop_id, memberProp.id, 'Member link prop mismatch');
+  });
+
   void prop;
   void otherGroup;
   void memberInvite;
@@ -620,7 +680,7 @@ if (require.main === module) {
 
   (async () => {
     try {
-      console.log('[smoke-groups-mini] low-load mode: 11 group integration checks');
+      console.log('[smoke-groups-mini] low-load mode: 12 group integration checks');
       ctx = await provisionSmokeUsers(admin, url, anonKey);
       const outsider = await provisionOutsiderClient(admin, url, anonKey, ctx.runId);
       ctx = {
