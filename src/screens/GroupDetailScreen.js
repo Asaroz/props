@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import {
   addVouch,
+  getFriendProfiles,
   getGroupDetail,
   listGroupInvitesForGroup,
   removeVouch,
@@ -55,6 +56,17 @@ function toDisplayDate(value) {
   });
 }
 
+function friendSuggestionLabel(profile) {
+  const displayName = String(profile?.displayName || '').trim();
+  const username = String(profile?.username || '').trim();
+
+  if (displayName && username && displayName.toLowerCase() !== username.toLowerCase()) {
+    return `${displayName} (@${username})`;
+  }
+
+  return displayName || username || `User ${String(profile?.id || '').slice(0, 8)}`;
+}
+
 export default function GroupDetailScreen({ currentUser, params, onBack, onNavigate }) {
   const groupId = String(params?.groupId || '').trim();
 
@@ -62,10 +74,12 @@ export default function GroupDetailScreen({ currentUser, params, onBack, onNavig
   const [members, setMembers] = useState([]);
   const [feedEntries, setFeedEntries] = useState([]);
   const [pendingInvites, setPendingInvites] = useState([]);
+  const [friendSuggestions, setFriendSuggestions] = useState([]);
 
   const [inviteDisplayName, setInviteDisplayName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isSendingInvite, setIsSendingInvite] = useState(false);
+  const [isSendingSuggestedInviteId, setIsSendingSuggestedInviteId] = useState('');
   const [isMutatingVouchId, setIsMutatingVouchId] = useState('');
 
   const [error, setError] = useState('');
@@ -86,16 +100,52 @@ export default function GroupDetailScreen({ currentUser, params, onBack, onNavig
 
     try {
       const detail = await getGroupDetail(currentUser, groupId);
-      const invites =
+      const [invites, friends] = detail?.viewerRole === 'owner'
+        ? await Promise.all([
+            listGroupInvitesForGroup(currentUser, groupId),
+            getFriendProfiles(currentUser),
+          ])
+        : [[], []];
+
+      const ownerInvites =
         detail?.viewerRole === 'owner'
-          ? await listGroupInvitesForGroup(currentUser, groupId)
+          ? invites
           : [];
+
+      const memberUserIds = new Set((detail.members || []).map((member) => member.userId).filter(Boolean));
+      const pendingInviteeIds = new Set(
+        (ownerInvites || [])
+          .filter((invite) => invite.status === 'pending')
+          .map((invite) => invite.inviteeId)
+          .filter(Boolean)
+      );
+
+      const suggestions = (friends || []).filter((friend) => {
+        if (!friend?.id) {
+          return false;
+        }
+
+        if (!String(friend.displayName || '').trim()) {
+          return false;
+        }
+
+        if (memberUserIds.has(friend.id)) {
+          return false;
+        }
+
+        if (pendingInviteeIds.has(friend.id)) {
+          return false;
+        }
+
+        return true;
+      });
 
       setGroup(detail.group || null);
       setMembers(detail.members || []);
       setFeedEntries(detail.feed || []);
       setViewerRole(detail.viewerRole || 'member');
-      setPendingInvites(invites || []);
+      setPendingInvites(ownerInvites || []);
+      setFriendSuggestions(suggestions);
     } catch (_loadError) {
       setError(toSafeErrorMessage('Group details could not be loaded.'));
     } finally {
@@ -190,6 +240,28 @@ export default function GroupDetailScreen({ currentUser, params, onBack, onNavig
       setError(toSafeErrorMessage('Vouch action failed.'));
     } finally {
       setIsMutatingVouchId('');
+    }
+  }
+
+  async function handleInviteSuggestedFriend(friendProfile) {
+    const displayName = String(friendProfile?.displayName || '').trim();
+    if (!displayName) {
+      setError('This friend has no display name set.');
+      return;
+    }
+
+    setIsSendingSuggestedInviteId(friendProfile.id || '');
+    setError('');
+    setNotice('');
+
+    try {
+      await sendGroupInviteByDisplayName(currentUser, groupId, displayName);
+      setNotice(`Invite sent to ${displayName}.`);
+      await loadGroup();
+    } catch (_inviteError) {
+      setError(toSafeErrorMessage('Invite could not be sent.'));
+    } finally {
+      setIsSendingSuggestedInviteId('');
     }
   }
 
@@ -343,6 +415,26 @@ export default function GroupDetailScreen({ currentUser, params, onBack, onNavig
           >
             <Text style={styles.primaryButtonText}>{isSendingInvite ? 'Sending...' : 'Send Invite'}</Text>
           </Pressable>
+
+          <Text style={styles.pendingTitle}>Friend Suggestions ({friendSuggestions.length})</Text>
+          {!friendSuggestions.length ? (
+            <Text style={styles.emptyText}>No friend suggestions available.</Text>
+          ) : null}
+          {friendSuggestions.map((friend) => {
+            const isBusy = isSendingSuggestedInviteId === friend.id;
+            return (
+              <View key={friend.id} style={styles.suggestionRow}>
+                <Text style={styles.memberRowText}>{friendSuggestionLabel(friend)}</Text>
+                <Pressable
+                  style={[styles.inlineButton, styles.primaryInlineButton]}
+                  onPress={() => handleInviteSuggestedFriend(friend)}
+                  disabled={isBusy}
+                >
+                  <Text style={styles.inlineButtonText}>{isBusy ? '...' : 'Invite'}</Text>
+                </Pressable>
+              </View>
+            );
+          })}
 
           <Text style={styles.pendingTitle}>Pending Invites ({pendingInvites.length})</Text>
           {!pendingInvites.length ? <Text style={styles.emptyText}>No pending invites for this group.</Text> : null}
@@ -509,6 +601,18 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     padding: 10,
     marginBottom: 8,
+  },
+  suggestionRow: {
+    borderWidth: 1,
+    borderColor: palette.border,
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+    padding: 10,
+    marginBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
   },
   feedTitle: {
     color: palette.textPrimary,
