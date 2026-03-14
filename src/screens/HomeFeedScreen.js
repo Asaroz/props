@@ -434,6 +434,9 @@ export default function HomeFeedScreen({ currentUser, onLogout, onNavigate }) {
           <Text style={styles.sessionLine}>Signed in as {currentUser.email || currentUser.username}</Text>
         </View>
         <View style={styles.topActions}>
+          <Pressable style={styles.groupsButton} onPress={() => onNavigate('groupsHub')}>
+            <Text style={styles.groupsButtonText}>Groups</Text>
+          </Pressable>
           <NotificationBell
             unreadCount={unreadNotificationCount}
             onPress={() => togglePanel('notifications')}
@@ -465,6 +468,9 @@ export default function HomeFeedScreen({ currentUser, onLogout, onNavigate }) {
         </Pressable>
         <Pressable style={styles.placeholderItem} onPress={() => onNavigate('giveProps')}>
           <PlaceholderCard title="Neue Props" caption="Props geben" />
+        </Pressable>
+        <Pressable style={styles.placeholderItem} onPress={() => onNavigate('groupsHub')}>
+          <PlaceholderCard title="Gruppen" caption="Groups Hub oeffnen" />
         </Pressable>
       </View>
 
@@ -711,6 +717,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+  },
+  groupsButton: {
+    backgroundColor: palette.accent,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  groupsButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 12,
   },
   logoutButton: {
     backgroundColor: palette.card,
