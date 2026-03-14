@@ -13,6 +13,7 @@
     "smoke:profile": "node scripts/smoke/test-profile.js",
     "smoke:friendship": "node scripts/smoke/test-friendship.js",
     "smoke:friendship:mini": "node scripts/smoke/test-friendship-mini.js",
+    "smoke:groups:mini": "node scripts/smoke/test-groups-mini.js",
     "smoke:props": "node scripts/smoke/test-props.js",
     "smoke:rls": "node scripts/smoke/test-rls-boundaries.js",
     "smoke:vouching": "node scripts/smoke/test-vouching.js",
