@@ -279,6 +279,113 @@ async function runGroupsMiniTests(ctx) {
     rejectedInvite = rejectedRow;
   });
 
+  await runTest('groups-mini: non-invitee cannot reject pending invite', async () => {
+    assert(ctx.outsiderUserId, 'Outsider user id is required for non-invitee reject checks');
+
+    const { data: pendingInvite, error: pendingInviteErr } = await clientB
+      .from('group_invites')
+      .insert({
+        group_id: group.id,
+        inviter_id: idB,
+        invitee_id: ctx.outsiderUserId,
+        status: 'pending',
+      })
+      .select('id, status')
+      .single();
+
+    if (pendingInviteErr) {
+      throw pendingInviteErr;
+    }
+
+    const { data: blockedRejectRows, error: blockedRejectErr } = await clientA
+      .from('group_invites')
+      .update({ status: 'rejected', responded_at: new Date().toISOString() })
+      .eq('id', pendingInvite.id)
+      .eq('status', 'pending')
+      .select('id, status');
+
+    assert(
+      blockedRejectErr || (blockedRejectRows || []).length === 0,
+      'Only invitee may reject pending invite'
+    );
+
+    const { data: canceledByInviter, error: cancelCleanupErr } = await clientB
+      .from('group_invites')
+      .update({ status: 'canceled', responded_at: new Date().toISOString() })
+      .eq('id', pendingInvite.id)
+      .eq('status', 'pending')
+      .select('id, status')
+      .single();
+
+    if (cancelCleanupErr) {
+      throw cancelCleanupErr;
+    }
+
+    assertEqual(canceledByInviter.status, 'canceled', 'Inviter cleanup cancel should succeed');
+  });
+
+  await runTest('groups-mini: inviter and owner can cancel pending invites', async () => {
+    assert(ctx.outsiderUserId, 'Outsider user id is required for cancel checks');
+
+    const { data: inviteForInviterCancel, error: inviteForInviterCancelErr } = await clientB
+      .from('group_invites')
+      .insert({
+        group_id: group.id,
+        inviter_id: idB,
+        invitee_id: ctx.outsiderUserId,
+        status: 'pending',
+      })
+      .select('id, status')
+      .single();
+
+    if (inviteForInviterCancelErr) {
+      throw inviteForInviterCancelErr;
+    }
+
+    const { data: canceledByInviter, error: canceledByInviterErr } = await clientB
+      .from('group_invites')
+      .update({ status: 'canceled', responded_at: new Date().toISOString() })
+      .eq('id', inviteForInviterCancel.id)
+      .eq('status', 'pending')
+      .select('id, status, inviter_id')
+      .single();
+
+    if (canceledByInviterErr) {
+      throw canceledByInviterErr;
+    }
+
+    assertEqual(canceledByInviter.status, 'canceled', 'Inviter should be able to cancel own pending invite');
+
+    const { data: inviteForOwnerCancel, error: inviteForOwnerCancelErr } = await clientB
+      .from('group_invites')
+      .insert({
+        group_id: group.id,
+        inviter_id: idB,
+        invitee_id: ctx.outsiderUserId,
+        status: 'pending',
+      })
+      .select('id, status')
+      .single();
+
+    if (inviteForOwnerCancelErr) {
+      throw inviteForOwnerCancelErr;
+    }
+
+    const { data: canceledByOwner, error: canceledByOwnerErr } = await clientA
+      .from('group_invites')
+      .update({ status: 'canceled', responded_at: new Date().toISOString() })
+      .eq('id', inviteForOwnerCancel.id)
+      .eq('status', 'pending')
+      .select('id, status')
+      .single();
+
+    if (canceledByOwnerErr) {
+      throw canceledByOwnerErr;
+    }
+
+    assertEqual(canceledByOwner.status, 'canceled', 'Owner should be able to cancel pending invites');
+  });
+
   await runTest('groups-mini: member list visible to members, hidden from non-members', async () => {
     const { data: ownerView, error: ownerViewErr } = await clientA
       .from('group_memberships')
@@ -513,7 +620,7 @@ if (require.main === module) {
 
   (async () => {
     try {
-      console.log('[smoke-groups-mini] low-load mode: 9 group integration checks');
+      console.log('[smoke-groups-mini] low-load mode: 11 group integration checks');
       ctx = await provisionSmokeUsers(admin, url, anonKey);
       const outsider = await provisionOutsiderClient(admin, url, anonKey, ctx.runId);
       ctx = {
