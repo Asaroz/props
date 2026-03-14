@@ -9,8 +9,10 @@ import {
   View,
 } from 'react-native';
 import {
-  createPropsEntry,
+  addVouch,
+  removeVouch,
   getCurrentProfile,
+  getFriendProfiles,
   listIncomingFriendRequests,
   listFriends,
   listProfileProps,
@@ -50,10 +52,40 @@ function shortUserLabel(userId) {
   return `User ${String(userId).slice(0, 8)}`;
 }
 
-function mapEntryToFeedCard(entry, currentUserId) {
+function formatFriendLabel(profile, fallbackUserId) {
+  const displayName = String(profile?.displayName || '').trim();
+  const username = String(profile?.username || '').trim();
+
+  if (displayName && username && displayName.toLowerCase() !== username.toLowerCase()) {
+    return `${displayName} (@${username})`;
+  }
+
+  if (displayName || username) {
+    return displayName || username;
+  }
+
+  return shortUserLabel(fallbackUserId);
+}
+
+function mapEntryToFeedCard(entry, currentUserId, friendProfilesMap) {
   const isReceived = entry.toUserId === currentUserId;
-  const otherUserId = isReceived ? entry.fromUserId : entry.toUserId;
-  const title = isReceived ? `${shortUserLabel(otherUserId)} -> Du` : `Du -> ${shortUserLabel(otherUserId)}`;
+  const isSent = entry.fromUserId === currentUserId;
+  const fromLabel = formatFriendLabel(friendProfilesMap?.[entry.fromUserId], entry.fromUserId);
+  const toLabel = formatFriendLabel(friendProfilesMap?.[entry.toUserId], entry.toUserId);
+
+  let title;
+  let location;
+
+  if (isReceived) {
+    title = `${fromLabel} -> Du`;
+    location = 'Erhalten';
+  } else if (isSent) {
+    title = `Du -> ${toLabel}`;
+    location = 'Gesendet';
+  } else {
+    title = `${fromLabel} -> ${toLabel}`;
+    location = 'Freundeskreis';
+  }
 
   const collectedProps = [];
   if (entry.content) {
@@ -73,13 +105,15 @@ function mapEntryToFeedCard(entry, currentUserId) {
   return {
     id: entry.id,
     friendName: title,
-    location: isReceived ? 'Erhalten' : 'Gesendet',
+    location,
     updatedAt: toDisplayDate(entry.createdAt),
     collectedProps,
+    vouchCount: entry.vouchCount ?? 0,
+    hasVouched: entry.hasVouched ?? false,
   };
 }
 
-export default function HomeFeedScreen({ currentUser, onLogout }) {
+export default function HomeFeedScreen({ currentUser, onLogout, onNavigate }) {
   const [activePanel, setActivePanel] = useState(null);
 
   const [profileForm, setProfileForm] = useState({
@@ -87,11 +121,6 @@ export default function HomeFeedScreen({ currentUser, onLogout }) {
     username: '',
     city: '',
     bio: '',
-  });
-  const [propForm, setPropForm] = useState({
-    toUserId: '',
-    content: '',
-    tags: '',
   });
 
   const [friendInviteDisplayName, setFriendInviteDisplayName] = useState('');
@@ -101,18 +130,16 @@ export default function HomeFeedScreen({ currentUser, onLogout }) {
   const [isLoadingFeed, setIsLoadingFeed] = useState(false);
   const [isLoadingFriends, setIsLoadingFriends] = useState(false);
   const [isSendingFriendRequest, setIsSendingFriendRequest] = useState(false);
-  const [isCreatingProp, setIsCreatingProp] = useState(false);
 
   const [feedEntries, setFeedEntries] = useState([]);
   const [profilePropsEntries, setProfilePropsEntries] = useState([]);
   const [friends, setFriends] = useState([]);
+  const [friendProfiles, setFriendProfiles] = useState([]);
   const [incomingRequests, setIncomingRequests] = useState([]);
   const [friendsCacheAt, setFriendsCacheAt] = useState('');
 
   const [profileNotice, setProfileNotice] = useState('');
   const [profileError, setProfileError] = useState('');
-  const [propNotice, setPropNotice] = useState('');
-  const [propError, setPropError] = useState('');
   const [feedError, setFeedError] = useState('');
   const [friendsNotice, setFriendsNotice] = useState('');
   const [friendsError, setFriendsError] = useState('');
@@ -141,13 +168,15 @@ export default function HomeFeedScreen({ currentUser, onLogout }) {
     setFriendsError('');
 
     try {
-      const [friendsData, incomingData] = await Promise.all([
+      const [friendsData, incomingData, friendProfilesData] = await Promise.all([
         listFriends(currentUser),
         listIncomingFriendRequests(currentUser),
+        getFriendProfiles(currentUser),
       ]);
 
       setFriends(friendsData || []);
       setIncomingRequests(incomingData || []);
+      setFriendProfiles(friendProfilesData || []);
 
       const savedAt = new Date().toISOString();
       setFriendsCacheAt(savedAt);
@@ -226,16 +255,15 @@ export default function HomeFeedScreen({ currentUser, onLogout }) {
     loadFriendsHub();
   }, [loadFeed, loadFriendsHub]);
 
-  const suggestedFriends = useMemo(() => {
-    const needle = propForm.toUserId.trim().toLowerCase();
-    const list = friends.map((friend) => friend.friendUserId).filter(Boolean);
-
-    if (!needle) {
-      return list.slice(0, 6);
+  const friendProfilesMap = useMemo(() => {
+    const map = {};
+    for (const profile of friendProfiles) {
+      if (profile.id) {
+        map[profile.id] = profile;
+      }
     }
-
-    return list.filter((id) => id.toLowerCase().includes(needle)).slice(0, 6);
-  }, [friends, propForm.toUserId]);
+    return map;
+  }, [friendProfiles]);
 
   function updateField(field, value) {
     setProfileForm((prev) => ({
@@ -244,15 +272,6 @@ export default function HomeFeedScreen({ currentUser, onLogout }) {
     }));
     setProfileNotice('');
     setProfileError('');
-  }
-
-  function updatePropField(field, value) {
-    setPropForm((prev) => ({
-      ...prev,
-      [field]: value,
-    }));
-    setPropNotice('');
-    setPropError('');
   }
 
   async function handleSaveProfile() {
@@ -331,50 +350,26 @@ export default function HomeFeedScreen({ currentUser, onLogout }) {
     }
   }
 
-  async function handleCreateProp() {
-    const normalizedToUserId = propForm.toUserId.trim();
-    const normalizedContent = propForm.content.trim();
-    const tags = propForm.tags
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean);
-
-    if (!normalizedToUserId) {
-      setPropError('toUserId is required.');
-      return;
-    }
-
-    if (!normalizedContent && !tags.length) {
-      setPropError('Please add text or at least one tag.');
-      return;
-    }
-
-    setIsCreatingProp(true);
-    setPropError('');
-    setPropNotice('');
-
+  async function handleVouch(propId) {
     try {
-      await createPropsEntry(currentUser, {
-        toUserId: normalizedToUserId,
-        content: normalizedContent,
-        tags,
-      });
-      setPropNotice('Props created.');
-      setPropForm((prev) => ({
-        ...prev,
-        content: '',
-        tags: '',
-      }));
+      await addVouch(currentUser, propId);
       await loadFeed();
     } catch (error) {
-      setPropError(error.message || 'Could not create props entry.');
-    } finally {
-      setIsCreatingProp(false);
+      // Surfaced inline in FeedCard; nothing to propagate here.
     }
   }
 
-  const feedItems = feedEntries.map((entry) => mapEntryToFeedCard(entry, currentUser.id));
-  const profileItems = profilePropsEntries.map((entry) => mapEntryToFeedCard(entry, currentUser.id));
+  async function handleUnvouch(propId) {
+    try {
+      await removeVouch(currentUser, propId);
+      await loadFeed();
+    } catch (error) {
+      // Surfaced inline in FeedCard; nothing to propagate here.
+    }
+  }
+
+  const feedItems = feedEntries.map((entry) => mapEntryToFeedCard(entry, currentUser.id, friendProfilesMap));
+  const profileItems = profilePropsEntries.map((entry) => mapEntryToFeedCard(entry, currentUser.id, friendProfilesMap));
 
   function togglePanel(panelName) {
     setActivePanel((prev) => (prev === panelName ? null : panelName));
@@ -412,8 +407,8 @@ export default function HomeFeedScreen({ currentUser, onLogout }) {
             }
           />
         </Pressable>
-        <Pressable style={styles.placeholderItem} onPress={() => togglePanel('props')}>
-          <PlaceholderCard title="Neue Props" caption={activePanel === 'props' ? 'Formular schliessen' : 'Props geben'} />
+        <Pressable style={styles.placeholderItem} onPress={() => onNavigate('giveProps')}>
+          <PlaceholderCard title="Neue Props" caption="Props geben" />
         </Pressable>
       </View>
 
@@ -467,11 +462,13 @@ export default function HomeFeedScreen({ currentUser, onLogout }) {
           <Text style={styles.sectionLabel}>Freundesliste ({friends.length})</Text>
           {!friends.length ? <Text style={styles.emptyText}>Noch keine Freunde.</Text> : null}
           {friends.map((friend) => (
-            <Text key={friend.id} style={styles.friendRowText}>{shortUserLabel(friend.friendUserId)}</Text>
+            <Text key={friend.id} style={styles.friendRowText}>
+              {formatFriendLabel(friendProfilesMap[friend.friendUserId], friend.friendUserId)}
+            </Text>
           ))}
 
           {friendsCacheAt ? <Text style={styles.metaText}>Cache aktualisiert: {toDisplayDate(friendsCacheAt)}</Text> : null}
-          <Text style={styles.metaText}>Hinweis: Aktuell sind wegen RLS nur IDs verfuegbar; Profil-Details folgen in Security/Visibility-Work.</Text>
+          <Text style={styles.metaText}>Display Names werden aus den Freundesprofilen geladen.</Text>
 
           {friendsError ? <Text style={styles.errorText}>{friendsError}</Text> : null}
           {friendsNotice ? <Text style={styles.noticeText}>{friendsNotice}</Text> : null}
@@ -544,65 +541,6 @@ export default function HomeFeedScreen({ currentUser, onLogout }) {
         </View>
       ) : null}
 
-      {activePanel === 'props' ? (
-        <View style={styles.profileCard}>
-          <Text style={styles.profileTitle}>Neue Props geben</Text>
-
-          <Text style={styles.label}>toUserId (UUID)</Text>
-          <TextInput
-            style={styles.input}
-            value={propForm.toUserId}
-            onChangeText={(value) => updatePropField('toUserId', value)}
-            autoCapitalize="none"
-            placeholder="friend user id"
-            placeholderTextColor={palette.textSecondary}
-          />
-
-          {suggestedFriends.length ? (
-            <View style={styles.suggestionWrap}>
-              {suggestedFriends.map((userId) => (
-                <Pressable key={userId} style={styles.suggestionChip} onPress={() => updatePropField('toUserId', userId)}>
-                  <Text style={styles.suggestionChipText}>{shortUserLabel(userId)}</Text>
-                </Pressable>
-              ))}
-            </View>
-          ) : (
-            <Text style={styles.emptyText}>Keine Freund-Vorschlaege verfuegbar.</Text>
-          )}
-
-          <Text style={styles.label}>Text (optional)</Text>
-          <TextInput
-            style={[styles.input, styles.bioInput]}
-            value={propForm.content}
-            onChangeText={(value) => updatePropField('content', value)}
-            multiline
-            placeholder="Was war cool?"
-            placeholderTextColor={palette.textSecondary}
-          />
-
-          <Text style={styles.label}>Tags (comma-separated, optional)</Text>
-          <TextInput
-            style={styles.input}
-            value={propForm.tags}
-            onChangeText={(value) => updatePropField('tags', value)}
-            autoCapitalize="none"
-            placeholder="teamwork, support"
-            placeholderTextColor={palette.textSecondary}
-          />
-
-          {propError ? <Text style={styles.errorText}>{propError}</Text> : null}
-          {propNotice ? <Text style={styles.noticeText}>{propNotice}</Text> : null}
-
-          <Pressable
-            style={styles.saveButton}
-            onPress={handleCreateProp}
-            disabled={isCreatingProp}
-          >
-            <Text style={styles.saveButtonText}>{isCreatingProp ? 'Creating...' : 'Create props'}</Text>
-          </Pressable>
-        </View>
-      ) : null}
-
       {activePanel === null ? (
         <>
           <View style={styles.feedHeadingRow}>
@@ -620,13 +558,23 @@ export default function HomeFeedScreen({ currentUser, onLogout }) {
           ) : null}
 
           {feedItems.map((item) => (
-            <FeedCard key={item.id} item={item} />
+            <FeedCard
+              key={item.id}
+              item={item}
+              onVouch={handleVouch}
+              onUnvouch={handleUnvouch}
+            />
           ))}
 
           <Text style={styles.feedTitle}>Profil Feed (gesammelt)</Text>
           {!profileItems.length ? <Text style={styles.emptyText}>Noch keine gesammelten Props.</Text> : null}
           {profileItems.map((item) => (
-            <FeedCard key={`profile-${item.id}`} item={item} />
+            <FeedCard
+              key={`profile-${item.id}`}
+              item={item}
+              onVouch={handleVouch}
+              onUnvouch={handleUnvouch}
+            />
           ))}
         </>
       ) : null}

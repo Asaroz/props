@@ -1,8 +1,29 @@
-import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import React, { useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { palette } from '../../theme/colors';
 
-export default function FeedCard({ item }) {
+export default function FeedCard({ item, onVouch, onUnvouch }) {
+  const [isVouching, setIsVouching] = useState(false);
+  const [vouchError, setVouchError] = useState('');
+
+  async function handleVouchToggle() {
+    setIsVouching(true);
+    setVouchError('');
+    try {
+      if (item.hasVouched) {
+        await onUnvouch(item.id);
+      } else {
+        await onVouch(item.id);
+      }
+    } catch (error) {
+      setVouchError(error.message || 'Vouch fehlgeschlagen.');
+    } finally {
+      setIsVouching(false);
+    }
+  }
+
+  const canVouch = typeof onVouch === 'function' && typeof onUnvouch === 'function';
+
   return (
     <View style={styles.card}>
       <View style={styles.headerRow}>
@@ -23,7 +44,23 @@ export default function FeedCard({ item }) {
         ))}
       </View>
 
-      <Text style={styles.footerHint}>Profil und Interaktionen folgen als naechstes.</Text>
+      <View style={styles.vouchRow}>
+        <Text style={styles.vouchCount}>
+          {item.vouchCount === 1 ? '1 Vouch' : `${item.vouchCount ?? 0} Vouches`}
+        </Text>
+        {canVouch ? (
+          <Pressable
+            style={[styles.vouchButton, item.hasVouched && styles.vouchButtonActive]}
+            onPress={handleVouchToggle}
+            disabled={isVouching}
+          >
+            <Text style={[styles.vouchButtonText, item.hasVouched && styles.vouchButtonTextActive]}>
+              {isVouching ? '...' : item.hasVouched ? 'Unvouch' : 'Vouch'}
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
+      {vouchError ? <Text style={styles.vouchError}>{vouchError}</Text> : null}
     </View>
   );
 }
@@ -79,5 +116,39 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 12,
     color: palette.textSecondary,
+  },
+  vouchRow: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  vouchCount: {
+    fontSize: 12,
+    color: palette.textSecondary,
+    fontWeight: '500',
+  },
+  vouchButton: {
+    borderWidth: 1,
+    borderColor: palette.accent,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  vouchButtonActive: {
+    backgroundColor: palette.accent,
+  },
+  vouchButtonText: {
+    color: palette.accent,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  vouchButtonTextActive: {
+    color: '#FFFFFF',
+  },
+  vouchError: {
+    marginTop: 4,
+    fontSize: 11,
+    color: '#C62828',
   },
 });
