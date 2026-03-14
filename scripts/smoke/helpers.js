@@ -156,9 +156,9 @@ async function provisionUser(admin, url, anonKey, payload) {
 
     return { mode: 'signup' };
   } catch (err) {
-    if (!isRateLimitError(err)) {
-      throw err;
-    }
+    const fallbackReason = isRateLimitError(err)
+      ? 'rate-limit'
+      : 'signup-error';
 
     const { data, error: adminErr } = await admin.auth.admin.createUser({
       email: payload.email,
@@ -175,7 +175,7 @@ async function provisionUser(admin, url, anonKey, payload) {
       throw adminErr;
     }
 
-    return { mode: 'admin-fallback', userId: data.user.id };
+    return { mode: 'admin-fallback', userId: data.user.id, reason: fallbackReason };
   }
 }
 
@@ -204,7 +204,11 @@ async function provisionSmokeUsers(admin, url, anonKey) {
   const resultB = await provisionUser(admin, url, anonKey, userBPayload);
 
   if (resultA.mode === 'admin-fallback' || resultB.mode === 'admin-fallback') {
-    console.log('[smoke] signup rate limit hit, used admin fallback for provisioning');
+    const reasonA = resultA.reason || 'unknown';
+    const reasonB = resultB.reason || 'unknown';
+    console.log(
+      `[smoke] used admin fallback for provisioning (A: ${reasonA}, B: ${reasonB})`
+    );
   }
 
   const authUserA = await findAuthUserByEmail(admin, userAPayload.email);

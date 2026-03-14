@@ -21,6 +21,7 @@ const {
 const { runAuthTests } = require('./test-auth');
 const { runProfileTests } = require('./test-profile');
 const { runFriendshipTests } = require('./test-friendship');
+const { runNotificationTests } = require('./test-notifications');
 const { runPropsTests } = require('./test-props');
 const { runRlsBoundaryTests } = require('./test-rls-boundaries');
 const { runVouchingTests } = require('./test-vouching');
@@ -67,6 +68,9 @@ async function main() {
 
     console.log('[smoke] --- friendship ---');
     await runFriendshipTests(ctx);
+
+    console.log('[smoke] --- notifications ---');
+    await runNotificationTests(ctx);
 
     console.log('[smoke] --- props ---');
     await runPropsTests(ctx);

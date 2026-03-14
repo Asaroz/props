@@ -16,3 +16,8 @@ export {
 } from './friendshipService';
 export { createPropsEntry, listProfileProps, listPropsFeed } from './propsService';
 export { addVouch, removeVouch } from './vouchService';
+export {
+	listNotifications,
+	markAllNotificationsRead,
+	markNotificationRead,
+} from './notificationService';

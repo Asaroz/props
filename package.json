@@ -15,7 +15,8 @@
     "smoke:friendship:mini": "node scripts/smoke/test-friendship-mini.js",
     "smoke:props": "node scripts/smoke/test-props.js",
     "smoke:rls": "node scripts/smoke/test-rls-boundaries.js",
-    "smoke:vouching": "node scripts/smoke/test-vouching.js"
+    "smoke:vouching": "node scripts/smoke/test-vouching.js",
+    "smoke:notifications": "node scripts/smoke/test-notifications.js"
   },
   "dependencies": {
     "@expo/ngrok": "^4.1.3",

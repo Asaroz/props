@@ -15,14 +15,17 @@ import {
   getFriendProfiles,
   listIncomingFriendRequests,
   listFriends,
+  listNotifications,
   listProfileProps,
   listPropsFeed,
+  markAllNotificationsRead,
   respondToFriendRequest,
   sendFriendRequestByDisplayName,
   updateCurrentProfile,
 } from '../backend/services';
 import { loadFriendsSnapshot, saveFriendsSnapshot } from '../backend/cache/friendsCache';
 import FeedCard from '../components/feed/FeedCard';
+import NotificationBell from '../components/common/NotificationBell';
 import PlaceholderCard from '../components/common/PlaceholderCard';
 import { palette } from '../theme/colors';
 
@@ -42,6 +45,22 @@ function toDisplayDate(value) {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function notificationTypeLabel(type) {
+  if (type === 'friend_request_received') {
+    return 'hat dir eine Freundschaftsanfrage gesendet';
+  }
+
+  if (type === 'friend_request_accepted') {
+    return 'hat deine Freundschaftsanfrage angenommen';
+  }
+
+  if (type === 'friend_request_rejected') {
+    return 'hat deine Freundschaftsanfrage abgelehnt';
+  }
+
+  return type;
 }
 
 function shortUserLabel(userId) {
@@ -143,6 +162,17 @@ export default function HomeFeedScreen({ currentUser, onLogout, onNavigate }) {
   const [feedError, setFeedError] = useState('');
   const [friendsNotice, setFriendsNotice] = useState('');
   const [friendsError, setFriendsError] = useState('');
+
+  const [notifications, setNotifications] = useState([]);
+
+  const loadNotifications = useCallback(async () => {
+    try {
+      const data = await listNotifications(currentUser);
+      setNotifications(data || []);
+    } catch (_error) {
+      // Notifications are best-effort; silently ignore to avoid blocking the main UI.
+    }
+  }, [currentUser]);
 
   const loadFeed = useCallback(async () => {
     setIsLoadingFeed(true);
@@ -254,6 +284,17 @@ export default function HomeFeedScreen({ currentUser, onLogout, onNavigate }) {
     loadFeed();
     loadFriendsHub();
   }, [loadFeed, loadFriendsHub]);
+
+  useEffect(() => {
+    loadNotifications();
+    const interval = setInterval(loadNotifications, 30_000);
+    return () => clearInterval(interval);
+  }, [loadNotifications]);
+
+  const unreadNotificationCount = useMemo(
+    () => notifications.filter((n) => !n.readAt).length,
+    [notifications]
+  );
 
   const friendProfilesMap = useMemo(() => {
     const map = {};
@@ -368,6 +409,15 @@ export default function HomeFeedScreen({ currentUser, onLogout, onNavigate }) {
     }
   }
 
+  async function handleMarkAllNotificationsRead() {
+    try {
+      await markAllNotificationsRead(currentUser);
+      await loadNotifications();
+    } catch (_error) {
+      // Best-effort
+    }
+  }
+
   const feedItems = feedEntries.map((entry) => mapEntryToFeedCard(entry, currentUser.id, friendProfilesMap));
   const profileItems = profilePropsEntries.map((entry) => mapEntryToFeedCard(entry, currentUser.id, friendProfilesMap));
 
@@ -383,9 +433,15 @@ export default function HomeFeedScreen({ currentUser, onLogout, onNavigate }) {
           <Text style={styles.subtitle}>Welcome, {currentUser.displayName}</Text>
           <Text style={styles.sessionLine}>Signed in as {currentUser.email || currentUser.username}</Text>
         </View>
-        <Pressable style={styles.logoutButton} onPress={onLogout}>
-          <Text style={styles.logoutButtonText}>Logout</Text>
-        </Pressable>
+        <View style={styles.topActions}>
+          <NotificationBell
+            unreadCount={unreadNotificationCount}
+            onPress={() => togglePanel('notifications')}
+          />
+          <Pressable style={styles.logoutButton} onPress={onLogout}>
+            <Text style={styles.logoutButtonText}>Logout</Text>
+          </Pressable>
+        </View>
       </View>
 
       <View style={styles.placeholderRow}>
@@ -411,6 +467,43 @@ export default function HomeFeedScreen({ currentUser, onLogout, onNavigate }) {
           <PlaceholderCard title="Neue Props" caption="Props geben" />
         </Pressable>
       </View>
+
+      {activePanel === 'notifications' ? (
+        <View style={styles.profileCard}>
+          <View style={styles.feedHeadingRow}>
+            <Text style={styles.profileTitle}>Benachrichtigungen</Text>
+            <Pressable style={styles.refreshButton} onPress={loadNotifications}>
+              <Text style={styles.refreshButtonText}>Reload</Text>
+            </Pressable>
+          </View>
+
+          {unreadNotificationCount > 0 ? (
+            <Pressable style={[styles.inlineButton, styles.markAllButton]} onPress={handleMarkAllNotificationsRead}>
+              <Text style={styles.inlineButtonText}>Alle als gelesen markieren</Text>
+            </Pressable>
+          ) : null}
+
+          {!notifications.length ? (
+            <Text style={styles.emptyText}>Keine Benachrichtigungen.</Text>
+          ) : null}
+
+          {notifications.map((notif) => (
+            <View
+              key={notif.id}
+              style={[styles.requestRow, notif.readAt ? null : styles.unreadRow]}
+            >
+              <View style={styles.notifTextRow}>
+                <Text style={styles.requestText}>
+                  {notif.actorDisplayName || 'Jemand'}{' '}
+                  {notificationTypeLabel(notif.type)}
+                </Text>
+                {!notif.readAt ? <View style={styles.unreadDot} /> : null}
+              </View>
+              <Text style={styles.metaText}>{toDisplayDate(notif.createdAt)}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
 
       {activePanel === 'friends' ? (
         <View style={styles.profileCard}>
@@ -609,6 +702,11 @@ const styles = StyleSheet.create({
     color: palette.textSecondary,
     fontSize: 12,
   },
+  topActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   logoutButton: {
     backgroundColor: palette.card,
     borderWidth: 1,
@@ -784,6 +882,27 @@ const styles = StyleSheet.create({
     color: palette.textPrimary,
     fontSize: 12,
     fontWeight: '600',
+  },
+  unreadRow: {
+    backgroundColor: palette.accentSoft,
+    borderColor: palette.accent,
+  },
+  unreadDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#E53935',
+    flexShrink: 0,
+  },
+  notifTextRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  markAllButton: {
+    alignSelf: 'flex-start',
+    marginBottom: 10,
   },
   errorText: {
     marginTop: 8,
