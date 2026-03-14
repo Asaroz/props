@@ -1,5 +1,6 @@
 import { getSupabaseClient } from '../client/supabaseClient';
 import { canUseSupabase, getBackendConfig } from '../config/env';
+import { logError, logInfo, logWarn } from '../observability/logger';
 
 function mapFriendRequest(row) {
   if (!row) {
@@ -10,6 +11,7 @@ function mapFriendRequest(row) {
     id: row.id,
     senderId: row.sender_id,
     receiverId: row.receiver_id,
+    senderDisplayName: row.sender_display_name || null,
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -55,44 +57,62 @@ function ensureSupabaseFriendshipMode() {
 }
 
 async function findExistingFriendship(client, userId, otherUserId) {
-  const { data, error } = await client
-    .from('friendships')
-    .select('id, user_one_id, user_two_id, created_at')
-    .or(
-      `and(user_one_id.eq.${userId},user_two_id.eq.${otherUserId}),and(user_one_id.eq.${otherUserId},user_two_id.eq.${userId})`
-    )
-    .maybeSingle();
+  const [firstPairResult, secondPairResult] = await Promise.all([
+    client
+      .from('friendships')
+      .select('id, user_one_id, user_two_id, created_at')
+      .eq('user_one_id', userId)
+      .eq('user_two_id', otherUserId)
+      .maybeSingle(),
+    client
+      .from('friendships')
+      .select('id, user_one_id, user_two_id, created_at')
+      .eq('user_one_id', otherUserId)
+      .eq('user_two_id', userId)
+      .maybeSingle(),
+  ]);
 
-  if (error) {
-    throw error;
+  if (firstPairResult.error) {
+    throw firstPairResult.error;
   }
 
-  return data;
+  if (secondPairResult.error) {
+    throw secondPairResult.error;
+  }
+
+  return firstPairResult.data || secondPairResult.data || null;
 }
 
 export async function sendFriendRequest(currentUser, receiverUserId) {
+  const startedAt = Date.now();
   ensureSupabaseFriendshipMode();
 
-  const userId = await resolveSupabaseUserId(currentUser);
-  if (!userId) {
-    throw new Error('No authenticated Supabase user available for sending a friend request.');
-  }
+  try {
+    const userId = await resolveSupabaseUserId(currentUser);
+    if (!userId) {
+      throw new Error('No authenticated Supabase user available for sending a friend request.');
+    }
 
-  const normalizedReceiverId = String(receiverUserId || '').trim();
-  if (!normalizedReceiverId) {
-    throw new Error('receiverUserId is required.');
-  }
+    const normalizedReceiverId = String(receiverUserId || '').trim();
+    if (!normalizedReceiverId) {
+      throw new Error('receiverUserId is required.');
+    }
 
-  if (normalizedReceiverId === userId) {
-    throw new Error('You cannot send a friend request to yourself.');
-  }
+    if (normalizedReceiverId === userId) {
+      throw new Error('You cannot send a friend request to yourself.');
+    }
 
-  const client = getSupabaseClient();
+    logInfo('friendship.request.send.requested', {
+      hasCurrentUser: Boolean(currentUser?.id),
+      isSelfRequest: normalizedReceiverId === userId,
+    });
 
-  const existingFriendship = await findExistingFriendship(client, userId, normalizedReceiverId);
-  if (existingFriendship) {
-    throw new Error('You are already friends with this user.');
-  }
+    const client = getSupabaseClient();
+
+    const existingFriendship = await findExistingFriendship(client, userId, normalizedReceiverId);
+    if (existingFriendship) {
+      throw new Error('You are already friends with this user.');
+    }
 
   const { data: existingSentRequest, error: existingSentRequestError } = await client
     .from('friend_requests')
@@ -129,122 +149,250 @@ export async function sendFriendRequest(currentUser, receiverUserId) {
     throw new Error('This user already sent you a pending request. Please accept or reject it first.');
   }
 
-  if (existingSentRequest?.status === 'rejected') {
-    const { data: reopenedRequest, error: reopenError } = await client
+    if (existingSentRequest?.status === 'rejected') {
+      const { data: reopenedRequest, error: reopenError } = await client
+        .from('friend_requests')
+        .update({ status: 'pending' })
+        .eq('id', existingSentRequest.id)
+        .select('id, sender_id, receiver_id, status, created_at, updated_at')
+        .single();
+
+      if (reopenError) {
+        throw reopenError;
+      }
+
+      const mapped = mapFriendRequest(reopenedRequest);
+      logInfo('friendship.request.send.completed', {
+        outcome: 'reopened',
+        durationMs: Date.now() - startedAt,
+      });
+      return mapped;
+    }
+
+    const { data: createdRequest, error: createError } = await client
       .from('friend_requests')
-      .update({ status: 'pending' })
-      .eq('id', existingSentRequest.id)
+      .insert({
+        sender_id: userId,
+        receiver_id: normalizedReceiverId,
+        status: 'pending',
+      })
       .select('id, sender_id, receiver_id, status, created_at, updated_at')
       .single();
 
-    if (reopenError) {
-      throw reopenError;
+    if (createError) {
+      throw createError;
     }
 
-    return mapFriendRequest(reopenedRequest);
+    const mapped = mapFriendRequest(createdRequest);
+    logInfo('friendship.request.send.completed', {
+      outcome: 'created',
+      durationMs: Date.now() - startedAt,
+    });
+    return mapped;
+  } catch (error) {
+    logError('friendship.request.send.failed', error, {
+      durationMs: Date.now() - startedAt,
+    });
+    throw error;
   }
-
-  const { data: createdRequest, error: createError } = await client
-    .from('friend_requests')
-    .insert({
-      sender_id: userId,
-      receiver_id: normalizedReceiverId,
-      status: 'pending',
-    })
-    .select('id, sender_id, receiver_id, status, created_at, updated_at')
-    .single();
-
-  if (createError) {
-    throw createError;
-  }
-
-  return mapFriendRequest(createdRequest);
 }
 
-export async function respondToFriendRequest(currentUser, requestId, action) {
+export async function sendFriendRequestByDisplayName(currentUser, displayName) {
   ensureSupabaseFriendshipMode();
 
-  const userId = await resolveSupabaseUserId(currentUser);
-  if (!userId) {
-    throw new Error('No authenticated Supabase user available for responding to a friend request.');
-  }
-
-  const normalizedRequestId = String(requestId || '').trim();
-  if (!normalizedRequestId) {
-    throw new Error('requestId is required.');
-  }
-
-  const normalizedAction = String(action || '').trim().toLowerCase();
-  if (normalizedAction !== 'accept' && normalizedAction !== 'reject') {
-    throw new Error("action must be either 'accept' or 'reject'.");
+  const normalizedDisplayName = String(displayName || '').trim();
+  if (!normalizedDisplayName) {
+    throw new Error('displayName is required.');
   }
 
   const client = getSupabaseClient();
-  const { data: requestRow, error: requestError } = await client
-    .from('friend_requests')
-    .select('id, sender_id, receiver_id, status, created_at, updated_at')
-    .eq('id', normalizedRequestId)
-    .single();
+  const { data, error } = await client.rpc('find_profile_by_display_name', {
+    input_display_name: normalizedDisplayName,
+  });
 
-  if (requestError) {
-    throw requestError;
+  if (error) {
+    throw error;
   }
 
-  if (requestRow.receiver_id !== userId) {
-    throw new Error('Only the request receiver can respond to this friend request.');
+  const matches = Array.isArray(data) ? data : data ? [data] : [];
+  if (matches.length > 1) {
+    throw new Error(
+      `Display name "${normalizedDisplayName}" is not unique. Please use another identifier.`
+    );
   }
 
-  if (requestRow.status !== 'pending') {
-    throw new Error(`This friend request is already ${requestRow.status}.`);
+  const match = matches[0] || null;
+  if (!match?.id) {
+    throw new Error(`No user found with display name "${normalizedDisplayName}".`);
   }
 
-  let friendship = null;
-  if (normalizedAction === 'accept') {
-    const { data: insertedFriendship, error: insertFriendshipError } = await client
-      .from('friendships')
-      .insert({
-        user_one_id: requestRow.sender_id,
-        user_two_id: requestRow.receiver_id,
-      })
-      .select('id, user_one_id, user_two_id, created_at')
-      .maybeSingle();
+  const request = await sendFriendRequest(currentUser, match.id);
+  return {
+    request,
+    targetUser: {
+      id: match.id,
+      displayName: match.display_name || normalizedDisplayName,
+    },
+  };
+}
 
-    if (insertFriendshipError && insertFriendshipError.code !== '23505') {
-      throw insertFriendshipError;
+export async function respondToFriendRequest(currentUser, requestId, action) {
+  const startedAt = Date.now();
+  ensureSupabaseFriendshipMode();
+
+  try {
+    const userId = await resolveSupabaseUserId(currentUser);
+    if (!userId) {
+      throw new Error('No authenticated Supabase user available for responding to a friend request.');
     }
 
-    if (insertedFriendship) {
-      friendship = mapFriendship(insertedFriendship, userId);
-    } else {
-      const existingFriendship = await findExistingFriendship(
-        client,
-        requestRow.sender_id,
-        requestRow.receiver_id
-      );
-      if (existingFriendship) {
-        friendship = mapFriendship(existingFriendship, userId);
+    const normalizedRequestId = String(requestId || '').trim();
+    if (!normalizedRequestId) {
+      throw new Error('requestId is required.');
+    }
+
+    const normalizedAction = String(action || '').trim().toLowerCase();
+    if (normalizedAction !== 'accept' && normalizedAction !== 'reject') {
+      throw new Error("action must be either 'accept' or 'reject'.");
+    }
+
+    const client = getSupabaseClient();
+
+    const { data: rpcData, error: rpcError } = await client.rpc('respond_to_friend_request', {
+      input_request_id: normalizedRequestId,
+      input_action: normalizedAction,
+    });
+
+    if (!rpcError) {
+      const rpcRow = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+      const request = mapFriendRequest(rpcRow);
+      const friendship =
+        normalizedAction === 'accept' && rpcRow?.friendship_id
+          ? {
+              id: rpcRow.friendship_id,
+              userOneId: rpcRow.friendship_user_one_id,
+              userTwoId: rpcRow.friendship_user_two_id,
+              friendUserId:
+                rpcRow.friendship_user_one_id === userId
+                  ? rpcRow.friendship_user_two_id
+                  : rpcRow.friendship_user_one_id,
+              createdAt: rpcRow.friendship_created_at,
+              source: 'supabase',
+            }
+          : null;
+
+      const result = { request, friendship };
+      logInfo('friendship.request.respond.completed', {
+        action: normalizedAction,
+        createdFriendship: Boolean(friendship),
+        source: 'rpc',
+        durationMs: Date.now() - startedAt,
+      });
+
+      return result;
+    }
+
+    const missingRpcFunction =
+      rpcError.code === 'PGRST202' ||
+      String(rpcError.message || '').toLowerCase().includes('does not exist');
+
+    if (!missingRpcFunction) {
+      throw rpcError;
+    }
+
+    logWarn('friendship.request.respond.rpc_missing', {
+      code: rpcError.code || null,
+    });
+
+    const result = await respondToFriendRequestLegacy(
+      client,
+      userId,
+      normalizedRequestId,
+      normalizedAction
+    );
+
+    logInfo('friendship.request.respond.completed', {
+      action: normalizedAction,
+      createdFriendship: Boolean(result.friendship),
+      source: 'legacy',
+      durationMs: Date.now() - startedAt,
+    });
+
+    return result;
+  } catch (error) {
+    logError('friendship.request.respond.failed', error, {
+      durationMs: Date.now() - startedAt,
+    });
+    throw error;
+  }
+}
+
+async function respondToFriendRequestLegacy(client, userId, requestId, action) {
+    const { data: requestRow, error: requestError } = await client
+      .from('friend_requests')
+      .select('id, sender_id, receiver_id, status, created_at, updated_at')
+      .eq('id', requestId)
+      .single();
+
+    if (requestError) {
+      throw requestError;
+    }
+
+    if (requestRow.receiver_id !== userId) {
+      throw new Error('Only the request receiver can respond to this friend request.');
+    }
+
+    if (requestRow.status !== 'pending') {
+      throw new Error(`This friend request is already ${requestRow.status}.`);
+    }
+
+    let friendship = null;
+    if (action === 'accept') {
+      const { data: insertedFriendship, error: insertFriendshipError } = await client
+        .from('friendships')
+        .insert({
+          user_one_id: requestRow.sender_id,
+          user_two_id: requestRow.receiver_id,
+        })
+        .select('id, user_one_id, user_two_id, created_at')
+        .maybeSingle();
+
+      if (insertFriendshipError && insertFriendshipError.code !== '23505') {
+        throw insertFriendshipError;
+      }
+
+      if (insertedFriendship) {
+        friendship = mapFriendship(insertedFriendship, userId);
+      } else {
+        const existingFriendship = await findExistingFriendship(
+          client,
+          requestRow.sender_id,
+          requestRow.receiver_id
+        );
+        if (existingFriendship) {
+          friendship = mapFriendship(existingFriendship, userId);
+        }
       }
     }
-  }
 
-  const nextStatus = normalizedAction === 'accept' ? 'accepted' : 'rejected';
-  const { data: updatedRequest, error: updateError } = await client
-    .from('friend_requests')
-    .update({ status: nextStatus })
-    .eq('id', requestRow.id)
-    .eq('receiver_id', userId)
-    .eq('status', 'pending')
-    .select('id, sender_id, receiver_id, status, created_at, updated_at')
-    .single();
+    const nextStatus = action === 'accept' ? 'accepted' : 'rejected';
+    const { data: updatedRequest, error: updateError } = await client
+      .from('friend_requests')
+      .update({ status: nextStatus })
+      .eq('id', requestRow.id)
+      .eq('receiver_id', userId)
+      .eq('status', 'pending')
+      .select('id, sender_id, receiver_id, status, created_at, updated_at')
+      .single();
 
-  if (updateError) {
-    throw updateError;
-  }
+    if (updateError) {
+      throw updateError;
+    }
 
-  return {
-    request: mapFriendRequest(updatedRequest),
-    friendship,
-  };
+    return {
+      request: mapFriendRequest(updatedRequest),
+      friendship,
+    };
 }
 
 export async function listFriends(currentUser) {
@@ -256,15 +404,96 @@ export async function listFriends(currentUser) {
   }
 
   const client = getSupabaseClient();
-  const { data, error } = await client
-    .from('friendships')
-    .select('id, user_one_id, user_two_id, created_at')
-    .or(`user_one_id.eq.${userId},user_two_id.eq.${userId}`)
-    .order('created_at', { ascending: false });
+  const [asUserOneResult, asUserTwoResult] = await Promise.all([
+    client
+      .from('friendships')
+      .select('id, user_one_id, user_two_id, created_at')
+      .eq('user_one_id', userId)
+      .order('created_at', { ascending: false }),
+    client
+      .from('friendships')
+      .select('id, user_one_id, user_two_id, created_at')
+      .eq('user_two_id', userId)
+      .order('created_at', { ascending: false }),
+  ]);
 
-  if (error) {
-    throw error;
+  if (asUserOneResult.error) {
+    throw asUserOneResult.error;
   }
 
-  return (data || []).map((row) => mapFriendship(row, userId));
+  if (asUserTwoResult.error) {
+    throw asUserTwoResult.error;
+  }
+
+  const merged = [...(asUserOneResult.data || []), ...(asUserTwoResult.data || [])];
+  const dedupedById = Array.from(new Map(merged.map((row) => [row.id, row])).values());
+  dedupedById.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+
+  return dedupedById.map((row) => mapFriendship(row, userId));
+}
+
+export async function listIncomingFriendRequests(currentUser) {
+  const startedAt = Date.now();
+  ensureSupabaseFriendshipMode();
+
+  try {
+    const userId = await resolveSupabaseUserId(currentUser);
+    if (!userId) {
+      throw new Error('No authenticated Supabase user available for loading friend requests.');
+    }
+
+    const client = getSupabaseClient();
+    const { data: withNames, error: withNamesError } = await client.rpc(
+      'list_incoming_friend_requests_with_sender',
+      {
+        input_user_id: userId,
+      }
+    );
+
+    if (!withNamesError) {
+      const mapped = (withNames || []).map(mapFriendRequest);
+      logInfo('friendship.request.incoming.loaded', {
+        source: 'rpc',
+        count: mapped.length,
+        durationMs: Date.now() - startedAt,
+      });
+      return mapped;
+    }
+
+    const missingRpcFunction =
+      withNamesError.code === 'PGRST202' ||
+      String(withNamesError.message || '').toLowerCase().includes('does not exist');
+
+    if (!missingRpcFunction) {
+      throw withNamesError;
+    }
+
+    logWarn('friendship.request.incoming.rpc_missing', {
+      code: withNamesError.code || null,
+    });
+
+    const { data, error } = await client
+      .from('friend_requests')
+      .select('id, sender_id, receiver_id, status, created_at, updated_at')
+      .eq('receiver_id', userId)
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw error;
+    }
+
+    const mapped = (data || []).map(mapFriendRequest);
+    logInfo('friendship.request.incoming.loaded', {
+      source: 'fallback-query',
+      count: mapped.length,
+      durationMs: Date.now() - startedAt,
+    });
+    return mapped;
+  } catch (error) {
+    logError('friendship.request.incoming.failed', error, {
+      durationMs: Date.now() - startedAt,
+    });
+    throw error;
+  }
 }

@@ -8,8 +8,10 @@ export {
 } from './authService';
 export { getCurrentProfile, updateCurrentProfile } from './profileService';
 export {
+	listIncomingFriendRequests,
 	listFriends,
 	respondToFriendRequest,
 	sendFriendRequest,
+	sendFriendRequestByDisplayName,
 } from './friendshipService';
-export { createPropsEntry, listPropsFeed } from './propsService';
+export { createPropsEntry, listProfileProps, listPropsFeed } from './propsService';

@@ -1,8 +1,377 @@
-// Service boundary placeholder for upcoming props backend implementation.
-export async function createPropsEntry() {
-  throw new Error('Props service is not implemented yet.');
+import { getSupabaseClient } from '../client/supabaseClient';
+import { canUseSupabase, getBackendConfig } from '../config/env';
+import { feedItems } from '../../data/mockFeed';
+import { logError, logInfo } from '../observability/logger';
+
+const TAG_SEPARATOR = '||';
+
+const mockPropsEntries = [];
+
+for (const item of feedItems) {
+  for (const prop of item.collectedProps || []) {
+    mockPropsEntries.push({
+      id: `mock-${item.id}-${mockPropsEntries.length + 1}`,
+      fromUserId: `mock-friend-${item.id}`,
+      toUserId: 'mock-user',
+      content: prop,
+      tags: [],
+      createdAt: new Date().toISOString(),
+      source: 'mock',
+    });
+  }
 }
 
-export async function listPropsFeed() {
-  throw new Error('Props service is not implemented yet.');
+function normalizeTags(inputTags) {
+  if (!Array.isArray(inputTags)) {
+    return [];
+  }
+
+  const seen = new Set();
+  const normalized = [];
+  for (const item of inputTags) {
+    const value = String(item || '').trim().toLowerCase();
+    if (!value) {
+      continue;
+    }
+
+    const safeValue = value.replace(new RegExp(`\\${TAG_SEPARATOR}`, 'g'), ' ');
+    if (seen.has(safeValue)) {
+      continue;
+    }
+
+    seen.add(safeValue);
+    normalized.push(safeValue);
+  }
+
+  return normalized;
+}
+
+function serializeTags(tags) {
+  if (!tags.length) {
+    return null;
+  }
+
+  return tags.join(TAG_SEPARATOR);
+}
+
+function deserializeTags(categoryValue) {
+  if (!categoryValue) {
+    return [];
+  }
+
+  return String(categoryValue)
+    .split(TAG_SEPARATOR)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function mapPropsEntry(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    fromUserId: row.from_user_id,
+    toUserId: row.to_user_id,
+    content: row.content || '',
+    tags: deserializeTags(row.category),
+    createdAt: row.created_at,
+    source: 'supabase',
+  };
+}
+
+function mapMockPropsEntry(row) {
+  return {
+    id: row.id,
+    fromUserId: row.fromUserId,
+    toUserId: row.toUserId,
+    content: row.content || '',
+    tags: Array.isArray(row.tags) ? row.tags : [],
+    createdAt: row.createdAt,
+    source: 'mock',
+  };
+}
+
+function resolveMockUserId(currentUser) {
+  return currentUser?.id || 'mock-user';
+}
+
+async function resolveSupabaseUserId(currentUser) {
+  if (currentUser?.id) {
+    return currentUser.id;
+  }
+
+  const client = getSupabaseClient();
+  const { data, error } = await client.auth.getUser();
+  if (error || !data?.user) {
+    return null;
+  }
+
+  return data.user.id;
+}
+
+function ensureSupabasePropsMode() {
+  const config = getBackendConfig();
+  if (config.provider !== 'supabase' || !canUseSupabase()) {
+    throw new Error('Props service is only available when Supabase mode is enabled.');
+  }
+}
+
+async function listFriendIds(client, userId) {
+  const { data, error } = await client
+    .from('friendships')
+    .select('user_one_id, user_two_id')
+    .or(`user_one_id.eq.${userId},user_two_id.eq.${userId}`);
+
+  if (error) {
+    throw error;
+  }
+
+  const friendIds = new Set();
+  for (const row of data || []) {
+    if (row.user_one_id === userId && row.user_two_id) {
+      friendIds.add(row.user_two_id);
+    }
+
+    if (row.user_two_id === userId && row.user_one_id) {
+      friendIds.add(row.user_one_id);
+    }
+  }
+
+  return [...friendIds];
+}
+
+export async function createPropsEntry(currentUser, input) {
+  const config = getBackendConfig();
+  const startedAt = Date.now();
+
+  logInfo('props.create.requested', {
+    mode: config.provider,
+    hasCurrentUser: Boolean(currentUser?.id),
+    hasTargetUser: Boolean(String(input?.toUserId || '').trim()),
+    hasContent: Boolean(String(input?.content || '').trim()),
+    tagCount: Array.isArray(input?.tags) ? input.tags.length : 0,
+  });
+
+  try {
+  if (config.provider !== 'supabase' || !canUseSupabase()) {
+    const fromUserId = resolveMockUserId(currentUser);
+    const toUserId = String(input?.toUserId || '').trim() || 'mock-friend-1';
+    const content = String(input?.content || '').trim();
+    const tags = normalizeTags(input?.tags);
+
+    const created = {
+      id: `mock-created-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      fromUserId,
+      toUserId,
+      content,
+      tags,
+      createdAt: new Date().toISOString(),
+      source: 'mock',
+    };
+
+    mockPropsEntries.unshift(created);
+    const mapped = mapMockPropsEntry(created);
+    logInfo('props.create.completed', {
+      mode: 'mock',
+      durationMs: Date.now() - startedAt,
+      tagCount: mapped.tags.length,
+    });
+    return mapped;
+  }
+
+  ensureSupabasePropsMode();
+
+  const fromUserId = await resolveSupabaseUserId(currentUser);
+  if (!fromUserId) {
+    throw new Error('No authenticated Supabase user available for creating props.');
+  }
+
+  const toUserId = String(input?.toUserId || '').trim();
+  const content = String(input?.content || '').trim();
+  const tags = normalizeTags(input?.tags);
+
+  if (!toUserId) {
+    throw new Error('toUserId is required.');
+  }
+
+  if (toUserId === fromUserId) {
+    throw new Error('You cannot give props to yourself.');
+  }
+
+  const client = getSupabaseClient();
+  const friendIds = await listFriendIds(client, fromUserId);
+  if (!friendIds.includes(toUserId)) {
+    throw new Error('You can only give props to a friend.');
+  }
+
+  const { data, error } = await client
+    .from('props_entries')
+    .insert({
+      from_user_id: fromUserId,
+      to_user_id: toUserId,
+      content,
+      category: serializeTags(tags),
+    })
+    .select('id, from_user_id, to_user_id, content, category, created_at')
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  const mapped = mapPropsEntry(data);
+  logInfo('props.create.completed', {
+    mode: 'supabase',
+    durationMs: Date.now() - startedAt,
+    tagCount: mapped?.tags?.length || 0,
+  });
+  return mapped;
+  } catch (error) {
+    logError('props.create.failed', error, {
+      mode: config.provider,
+      durationMs: Date.now() - startedAt,
+    });
+    throw error;
+  }
+}
+
+export async function listPropsFeed(currentUser) {
+  const config = getBackendConfig();
+  const startedAt = Date.now();
+
+  try {
+  if (config.provider !== 'supabase' || !canUseSupabase()) {
+    const userId = resolveMockUserId(currentUser);
+    const feed = mockPropsEntries
+      .filter((item) => item.fromUserId === userId || item.toUserId === userId)
+      .map(mapMockPropsEntry);
+
+    logInfo('props.feed.loaded', {
+      mode: 'mock',
+      durationMs: Date.now() - startedAt,
+      count: feed.length,
+    });
+    return feed;
+  }
+
+  ensureSupabasePropsMode();
+
+  const userId = await resolveSupabaseUserId(currentUser);
+  if (!userId) {
+    throw new Error('No authenticated Supabase user available for loading props feed.');
+  }
+
+  const client = getSupabaseClient();
+  const friendIds = await listFriendIds(client, userId);
+  if (!friendIds.length) {
+    return [];
+  }
+
+  const { data: sentRows, error: sentError } = await client
+    .from('props_entries')
+    .select('id, from_user_id, to_user_id, content, category, created_at')
+    .eq('from_user_id', userId)
+    .in('to_user_id', friendIds)
+    .order('created_at', { ascending: false });
+
+  if (sentError) {
+    throw sentError;
+  }
+
+  const { data: receivedRows, error: receivedError } = await client
+    .from('props_entries')
+    .select('id, from_user_id, to_user_id, content, category, created_at')
+    .eq('to_user_id', userId)
+    .in('from_user_id', friendIds)
+    .order('created_at', { ascending: false });
+
+  if (receivedError) {
+    throw receivedError;
+  }
+
+  const combined = [...(sentRows || []), ...(receivedRows || [])];
+  combined.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+  const feed = combined.map(mapPropsEntry);
+  logInfo('props.feed.loaded', {
+    mode: 'supabase',
+    durationMs: Date.now() - startedAt,
+    count: feed.length,
+  });
+  return feed;
+  } catch (error) {
+    logError('props.feed.failed', error, {
+      mode: config.provider,
+      durationMs: Date.now() - startedAt,
+    });
+    throw error;
+  }
+}
+
+export async function listProfileProps(currentUser, profileUserId) {
+  const config = getBackendConfig();
+  const startedAt = Date.now();
+
+  try {
+  if (config.provider !== 'supabase' || !canUseSupabase()) {
+    const viewerId = resolveMockUserId(currentUser);
+    const targetUserId = String(profileUserId || viewerId).trim();
+
+    const propsEntries = mockPropsEntries
+      .filter((item) => item.toUserId === targetUserId)
+      .map(mapMockPropsEntry);
+
+    logInfo('props.profile.loaded', {
+      mode: 'mock',
+      durationMs: Date.now() - startedAt,
+      count: propsEntries.length,
+    });
+    return propsEntries;
+  }
+
+  ensureSupabasePropsMode();
+
+  const viewerId = await resolveSupabaseUserId(currentUser);
+  if (!viewerId) {
+    throw new Error('No authenticated Supabase user available for loading profile props.');
+  }
+
+  const targetUserId = String(profileUserId || viewerId).trim();
+  if (!targetUserId) {
+    throw new Error('profileUserId is invalid.');
+  }
+
+  const client = getSupabaseClient();
+  const friendIds = await listFriendIds(client, targetUserId);
+  if (!friendIds.length) {
+    return [];
+  }
+
+  const { data, error } = await client
+    .from('props_entries')
+    .select('id, from_user_id, to_user_id, content, category, created_at')
+    .eq('to_user_id', targetUserId)
+    .in('from_user_id', friendIds)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    throw error;
+  }
+
+  const propsEntries = (data || []).map(mapPropsEntry);
+  logInfo('props.profile.loaded', {
+    mode: 'supabase',
+    durationMs: Date.now() - startedAt,
+    count: propsEntries.length,
+  });
+  return propsEntries;
+  } catch (error) {
+    logError('props.profile.failed', error, {
+      mode: config.provider,
+      durationMs: Date.now() - startedAt,
+    });
+    throw error;
+  }
 }

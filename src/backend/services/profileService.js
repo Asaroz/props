@@ -1,6 +1,7 @@
 import { getSupabaseClient } from '../client/supabaseClient';
 import { canUseSupabase, getBackendConfig } from '../config/env';
 import { getDemoAccounts } from '../auth/mockAuth';
+import { logError, logInfo } from '../observability/logger';
 
 function mapMockAccountToProfile(account) {
   if (!account) {
@@ -92,6 +93,9 @@ async function resolveSupabaseUserId(currentUser) {
 
 export async function getCurrentProfile(currentUser) {
   const config = getBackendConfig();
+  const startedAt = Date.now();
+
+  try {
 
   if (config.provider === 'supabase' && canUseSupabase()) {
     const userId = await resolveSupabaseUserId(currentUser);
@@ -123,10 +127,22 @@ export async function getCurrentProfile(currentUser) {
         throw createError;
       }
 
-      return mapSupabaseProfile(created);
+      const profile = mapSupabaseProfile(created);
+      logInfo('profile.get.completed', {
+        mode: 'supabase',
+        createdOnDemand: true,
+        durationMs: Date.now() - startedAt,
+      });
+      return profile;
     }
 
-    return mapSupabaseProfile(data);
+    const profile = mapSupabaseProfile(data);
+    logInfo('profile.get.completed', {
+      mode: 'supabase',
+      createdOnDemand: false,
+      durationMs: Date.now() - startedAt,
+    });
+    return profile;
   }
 
   if (!currentUser?.id) {
@@ -134,11 +150,34 @@ export async function getCurrentProfile(currentUser) {
   }
 
   const account = getDemoAccounts().find((item) => item.id === currentUser.id);
-  return mapMockAccountToProfile(account);
+  const profile = mapMockAccountToProfile(account);
+  logInfo('profile.get.completed', {
+    mode: 'mock',
+    found: Boolean(profile),
+    durationMs: Date.now() - startedAt,
+  });
+  return profile;
+  } catch (error) {
+    logError('profile.get.failed', error, {
+      mode: config.provider,
+      durationMs: Date.now() - startedAt,
+    });
+    throw error;
+  }
 }
 
 export async function updateCurrentProfile(currentUser, profileInput) {
   const config = getBackendConfig();
+  const startedAt = Date.now();
+
+  logInfo('profile.update.requested', {
+    mode: config.provider,
+    hasCurrentUser: Boolean(currentUser?.id),
+    hasDisplayName: Boolean(String(profileInput?.displayName || '').trim()),
+    hasUsername: Boolean(String(profileInput?.username || '').trim()),
+  });
+
+  try {
 
   if (config.provider === 'supabase' && canUseSupabase()) {
     const userId = await resolveSupabaseUserId(currentUser);
@@ -164,13 +203,22 @@ export async function updateCurrentProfile(currentUser, profileInput) {
       .single();
 
     if (error) {
+      if (error.code === '23505' && String(error.message || '').toLowerCase().includes('display_name')) {
+        throw new Error('This display name is already taken. Please choose another one.');
+      }
+
       throw error;
     }
 
-    return mapSupabaseProfile(data);
+    const profile = mapSupabaseProfile(data);
+    logInfo('profile.update.completed', {
+      mode: 'supabase',
+      durationMs: Date.now() - startedAt,
+    });
+    return profile;
   }
 
-  return {
+  const profile = {
     id: currentUser?.id || 'mock-user',
     email: currentUser?.email || profileInput.email || '',
     username: profileInput.username,
@@ -182,4 +230,18 @@ export async function updateCurrentProfile(currentUser, profileInput) {
     updatedAt: new Date().toISOString(),
     source: 'mock',
   };
+
+  logInfo('profile.update.completed', {
+    mode: 'mock',
+    durationMs: Date.now() - startedAt,
+  });
+
+  return profile;
+  } catch (error) {
+    logError('profile.update.failed', error, {
+      mode: config.provider,
+      durationMs: Date.now() - startedAt,
+    });
+    throw error;
+  }
 }

@@ -6,6 +6,7 @@ import {
   loadAuthSession,
   saveAuthSession,
 } from '../auth/sessionStore';
+import { logError, logInfo } from '../observability/logger';
 
 function buildDefaultProfilePayload(user) {
   const email = user.email || '';
@@ -70,6 +71,14 @@ export function getAuthServiceMode() {
 export async function loginWithPassword(identifier, password) {
   const config = getBackendConfig();
   const normalized = identifier.trim();
+  const startedAt = Date.now();
+
+  logInfo('auth.login.requested', {
+    mode: config.provider,
+    usesEmail: normalized.includes('@'),
+  });
+
+  try {
 
   if (config.provider === 'supabase' && canUseSupabase()) {
     const isEmail = normalized.includes('@');
@@ -86,12 +95,12 @@ export async function loginWithPassword(identifier, password) {
     });
 
     if (error) {
-      if (error.message?.toLowerCase().includes('invalid login credentials')) {
+      const normalizedErrorMessage = String(error.message || '').toLowerCase();
+      if (
+        normalizedErrorMessage.includes('invalid login credentials') ||
+        normalizedErrorMessage.includes('email not confirmed')
+      ) {
         throw new Error('Invalid email or password.');
-      }
-
-      if (error.message?.toLowerCase().includes('email not confirmed')) {
-        throw new Error('Please confirm your email address before logging in.');
       }
 
       throw new Error(error.message || 'Supabase login failed.');
@@ -114,6 +123,11 @@ export async function loginWithPassword(identifier, password) {
           }
         : null,
     });
+    logInfo('auth.login.completed', {
+      mode: 'supabase',
+      success: true,
+      durationMs: Date.now() - startedAt,
+    });
     return account;
   }
 
@@ -126,11 +140,31 @@ export async function loginWithPassword(identifier, password) {
     });
   }
 
+  logInfo('auth.login.completed', {
+    mode: 'mock',
+    success: Boolean(account),
+    durationMs: Date.now() - startedAt,
+  });
+
   return account;
+  } catch (error) {
+    logError('auth.login.failed', error, {
+      mode: config.provider,
+      durationMs: Date.now() - startedAt,
+    });
+    throw error;
+  }
 }
 
 export async function signUpWithPassword({ email, password, username, displayName, city }) {
   const config = getBackendConfig();
+  const startedAt = Date.now();
+
+  logInfo('auth.signup.requested', {
+    mode: config.provider,
+  });
+
+  try {
 
   if (config.provider !== 'supabase' || !canUseSupabase()) {
     throw new Error('Sign up is only available when Supabase mode is enabled.');
@@ -178,6 +212,11 @@ export async function signUpWithPassword({ email, password, username, displayNam
 
   if (!data.session) {
     await clearAuthSession();
+    logInfo('auth.signup.completed', {
+      mode: 'supabase',
+      requiresEmailConfirmation: true,
+      durationMs: Date.now() - startedAt,
+    });
     return {
       ...account,
       requiresEmailConfirmation: true,
@@ -199,6 +238,13 @@ export async function signUpWithPassword({ email, password, username, displayNam
   );
 
   if (profileError) {
+    if (
+      profileError.code === '23505' &&
+      String(profileError.message || '').toLowerCase().includes('display_name')
+    ) {
+      throw new Error('This display name is already taken. Please choose another one.');
+    }
+
     throw profileError;
   }
 
@@ -211,11 +257,24 @@ export async function signUpWithPassword({ email, password, username, displayNam
     },
   });
 
+  logInfo('auth.signup.completed', {
+    mode: 'supabase',
+    requiresEmailConfirmation: false,
+    durationMs: Date.now() - startedAt,
+  });
+
   return {
     ...account,
     requiresEmailConfirmation: false,
     profileCreated: true,
   };
+  } catch (error) {
+    logError('auth.signup.failed', error, {
+      mode: config.provider,
+      durationMs: Date.now() - startedAt,
+    });
+    throw error;
+  }
 }
 
 export async function restoreAuthSession() {
@@ -271,12 +330,17 @@ export async function restoreAuthSession() {
 
 export async function logoutCurrentUser() {
   const config = getBackendConfig();
+  const startedAt = Date.now();
   if (config.provider === 'supabase' && canUseSupabase()) {
     const client = getSupabaseClient();
     await client.auth.signOut();
   }
 
   await clearAuthSession();
+  logInfo('auth.logout.completed', {
+    mode: config.provider,
+    durationMs: Date.now() - startedAt,
+  });
 }
 
 export function listDemoAccounts(limit = 3) {
