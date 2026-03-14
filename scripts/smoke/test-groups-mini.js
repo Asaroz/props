@@ -73,6 +73,8 @@ async function runGroupsMiniTests(ctx) {
   let group;
   let otherGroup;
   let invite;
+  let memberInvite;
+  let rejectedInvite;
   let prop;
 
   await runTest('groups-mini: create group and owner bootstrap', async () => {
@@ -158,10 +160,10 @@ async function runGroupsMiniTests(ctx) {
     const { data: ownerUpdatedGroup, error: ownerUpdateErr } = await clientA
       .from('groups')
       .update({
-        description: 'Issue #15 owner-managed settings',
+        description: 'Issue #16 owner-managed settings',
       })
       .eq('id', group.id)
-      .select('id, description')
+      .select('id, description, invite_permission')
       .single();
 
     if (ownerUpdateErr) {
@@ -178,7 +180,8 @@ async function runGroupsMiniTests(ctx) {
       .single();
 
     assert(memberUpdateErr, 'Non-owner group settings update should be blocked by RLS');
-    assertEqual(ownerUpdatedGroup.description, 'Issue #15 owner-managed settings', 'Owner settings update mismatch');
+    assertEqual(ownerUpdatedGroup.description, 'Issue #16 owner-managed settings', 'Owner settings update mismatch');
+    assertEqual(ownerUpdatedGroup.invite_permission, 'owner_only', 'New groups must default to owner-only invites');
   });
 
   await runTest('groups-mini: invite acceptance creates membership and is idempotent-safe', async () => {
@@ -223,6 +226,57 @@ async function runGroupsMiniTests(ctx) {
     assert(memberRow.user_id === idB, 'Membership for invitee expected');
     assert(!secondAcceptErr, 'Second accept query should not hard-fail');
     assert((secondAccept || []).length === 0, 'Second accept should affect no rows');
+  });
+
+  await runTest('groups-mini: owner can enable member invites and invitee can reject', async () => {
+    assert(ctx.outsiderUserId, 'Outsider user id is required for member-invite checks');
+
+    const { data: toggledGroup, error: toggleErr } = await clientA
+      .from('groups')
+      .update({ invite_permission: 'member_invite' })
+      .eq('id', group.id)
+      .select('id, invite_permission')
+      .single();
+
+    if (toggleErr) {
+      throw toggleErr;
+    }
+
+    assertEqual(toggledGroup.invite_permission, 'member_invite', 'Owner should be able to allow member invites');
+
+    const { data: memberInviteRow, error: memberInviteErr } = await clientB
+      .from('group_invites')
+      .insert({
+        group_id: group.id,
+        inviter_id: idB,
+        invitee_id: ctx.outsiderUserId,
+        status: 'pending',
+      })
+      .select('id, group_id, inviter_id, invitee_id, status')
+      .single();
+
+    if (memberInviteErr) {
+      throw memberInviteErr;
+    }
+
+    const nowIso = new Date().toISOString();
+    const { data: rejectedRow, error: rejectErr } = await ctx.clientOutside
+      .from('group_invites')
+      .update({ status: 'rejected', responded_at: nowIso })
+      .eq('id', memberInviteRow.id)
+      .eq('invitee_id', ctx.outsiderUserId)
+      .eq('status', 'pending')
+      .select('id, status, responded_at')
+      .single();
+
+    if (rejectErr) {
+      throw rejectErr;
+    }
+
+    assertEqual(memberInviteRow.status, 'pending', 'Member-created invite should start pending');
+    assertEqual(rejectedRow.status, 'rejected', 'Invitee should be able to reject pending invite');
+    memberInvite = memberInviteRow;
+    rejectedInvite = rejectedRow;
   });
 
   await runTest('groups-mini: member list visible to members, hidden from non-members', async () => {
@@ -448,6 +502,8 @@ async function runGroupsMiniTests(ctx) {
 
   void prop;
   void otherGroup;
+  void memberInvite;
+  void rejectedInvite;
 }
 
 if (require.main === module) {
@@ -457,7 +513,7 @@ if (require.main === module) {
 
   (async () => {
     try {
-      console.log('[smoke-groups-mini] low-load mode: 8 group integration checks');
+      console.log('[smoke-groups-mini] low-load mode: 9 group integration checks');
       ctx = await provisionSmokeUsers(admin, url, anonKey);
       const outsider = await provisionOutsiderClient(admin, url, anonKey, ctx.runId);
       ctx = {
