@@ -1,0 +1,461 @@
+openapi: 3.0.3
+info:
+  title: Props Groups API (MVP)
+  version: 0.1.0
+  description: Compact endpoint contract for issue #13 groups flows.
+servers:
+  - url: /api
+security:
+  - bearerAuth: []
+paths:
+  /groups:
+    post:
+      summary: Create group
+      operationId: createGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                description:
+                  type: string
+                  nullable: true
+                cover_image_url:
+                  type: string
+                  format: uri
+                  nullable: true
+      responses:
+        '201':
+          description: Group created and caller joined as owner
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateGroupResponse'
+        '400': { $ref: '#/components/responses/InvalidPayload' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /groups/{groupId}/invites:
+    post:
+      summary: Invite user to group
+      operationId: inviteMember
+      parameters:
+        - $ref: '#/components/parameters/GroupId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [invitee_id]
+              properties:
+                invitee_id:
+                  type: string
+                  format: uuid
+                expires_at:
+                  type: string
+                  format: date-time
+                  nullable: true
+      responses:
+        '201':
+          description: Invite created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InviteResponse'
+        '400': { $ref: '#/components/responses/InvalidPayload' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenNotOwner' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/DomainError' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /groups/invites/{inviteId}/accept:
+    post:
+      summary: Accept invite
+      operationId: acceptInvite
+      parameters:
+        - $ref: '#/components/parameters/InviteId'
+      responses:
+        '200':
+          description: Invite accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcceptInviteResponse'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenNotInvitee' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /groups/invites/{inviteId}/reject:
+    post:
+      summary: Reject invite
+      operationId: rejectInvite
+      parameters:
+        - $ref: '#/components/parameters/InviteId'
+      responses:
+        '200':
+          description: Invite rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InviteResponse'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenNotInvitee' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /groups/{groupId}/members:
+    get:
+      summary: List group members
+      operationId: listGroupMembers
+      parameters:
+        - $ref: '#/components/parameters/GroupId'
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - in: query
+          name: cursor
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Member list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListMembersResponse'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenNotMember' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /groups/{groupId}/props-links:
+    post:
+      summary: Link existing props entry to group
+      operationId: linkPropsToGroup
+      parameters:
+        - $ref: '#/components/parameters/GroupId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prop_id]
+              properties:
+                prop_id:
+                  type: string
+                  format: uuid
+      responses:
+        '201':
+          description: Link created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PropsLinkResponse'
+        '400': { $ref: '#/components/responses/InvalidPayload' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenNotMember' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    GroupId:
+      in: path
+      name: groupId
+      required: true
+      schema:
+        type: string
+        format: uuid
+    InviteId:
+      in: path
+      name: inviteId
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    InvalidPayload:
+      description: Invalid request payload
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: invalid_payload
+              message: Request body is invalid.
+    Unauthorized:
+      description: Missing or invalid auth token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: unauthorized
+              message: Authentication required.
+    ForbiddenNotOwner:
+      description: Caller is not group owner
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: forbidden_not_owner
+              message: Owner role required.
+    ForbiddenNotInvitee:
+      description: Caller is not invitee
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: forbidden_not_invitee
+              message: Only invitee can perform this action.
+    ForbiddenNotMember:
+      description: Caller is not member of group
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: forbidden_not_member
+              message: Group membership required.
+    NotFound:
+      description: Referenced resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: not_found
+              message: Resource not found.
+    Conflict:
+      description: State conflict (duplicate/pending/non-pending)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: conflict
+              message: Requested state transition is not possible.
+    DomainError:
+      description: Domain rule violated
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: domain_error
+              message: Domain constraint violated.
+    Gone:
+      description: Resource expired
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: invite_expired
+              message: Invite has expired.
+    InternalError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: internal_error
+              message: Unexpected server error.
+
+  schemas:
+    Group:
+      type: object
+      required: [id, name, created_by, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        cover_image_url:
+          type: string
+          format: uri
+          nullable: true
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+
+    Membership:
+      type: object
+      required: [group_id, user_id, role]
+      properties:
+        group_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [owner, member]
+
+    Invite:
+      type: object
+      required: [id, group_id, inviter_id, invitee_id, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        group_id:
+          type: string
+          format: uuid
+        inviter_id:
+          type: string
+          format: uuid
+        invitee_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [pending, accepted, rejected, canceled]
+        responded_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    PropsLink:
+      type: object
+      required: [id, group_id, prop_id, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        group_id:
+          type: string
+          format: uuid
+        prop_id:
+          type: string
+          format: uuid
+        linked_by:
+          type: string
+          format: uuid
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    CreateGroupResponse:
+      type: object
+      required: [group, membership]
+      properties:
+        group:
+          $ref: '#/components/schemas/Group'
+        membership:
+          $ref: '#/components/schemas/Membership'
+
+    InviteResponse:
+      type: object
+      required: [invite]
+      properties:
+        invite:
+          $ref: '#/components/schemas/Invite'
+
+    AcceptInviteResponse:
+      type: object
+      required: [invite, membership]
+      properties:
+        invite:
+          $ref: '#/components/schemas/Invite'
+        membership:
+          $ref: '#/components/schemas/Membership'
+
+    ListMembersResponse:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [user_id, role]
+            properties:
+              user_id:
+                type: string
+                format: uuid
+              role:
+                type: string
+                enum: [owner, member]
+              display_name:
+                type: string
+              avatar_url:
+                type: string
+                nullable: true
+        next_cursor:
+          type: string
+          nullable: true
+
+    PropsLinkResponse:
+      type: object
+      required: [link]
+      properties:
+        link:
+          $ref: '#/components/schemas/PropsLink'
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+              nullable: true
